@@ -1,0 +1,10 @@
+node_modules/
+.netlify/
+.env
+.env.*
+!.env.example
+show-data/
+coverage/
+.DS_Store
+*.log
+test-results/
