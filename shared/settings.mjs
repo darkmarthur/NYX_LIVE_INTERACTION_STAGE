@@ -6,7 +6,7 @@ export const DEFAULTS = Object.freeze({
   opensAt: '2026-10-08T00:00:00-06:00',
   closesAt: '2026-10-22T19:00:00-06:00',
   purgeAt: '2026-10-23T10:00:00-06:00',
-  termsVersion: '2026-10-08-v1',
+  termsVersion: '2026-10-15-v2',
   maxPhotoBytes: 1048576,
   maxPhotoSide: 2048,
   maxOriginalBytes: 20971520,

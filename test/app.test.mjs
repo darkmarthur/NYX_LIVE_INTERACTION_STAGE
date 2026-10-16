@@ -24,7 +24,7 @@ function fixture(options = {}) {
   }
   return { backend, app, request, session, post };
 }
-const consent = { consent: true, termsVersion: '2026-10-08-v1', website: '' };
+const consent = { consent: true, termsVersion: settingsFrom(env).termsVersion, website: '' };
 
 test('Banco de exactamente 100 preguntas distintas', () => { assert.equal(QUESTIONS.length, 100); assert.equal(new Set(QUESTIONS).size, 100); });
 test('Pregunta estable y acotada en 1000 identidades', () => {
