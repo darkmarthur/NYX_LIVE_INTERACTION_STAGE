@@ -1,43 +1,53 @@
-// Se procesa en el dispositivo: no se sube el original ni su nombre/EXIF.
-function loadImage(file) {
-  const url = URL.createObjectURL(file);
+const TARGET = 256 * 1024, HARD_MAX = 384 * 1024;
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+function withWorker(file, limits) {
   return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
-    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Este navegador no puede abrir la imagen. Exporta la foto como JPEG o PNG y vuelve a seleccionarla.')); };
-    image.src = url;
+    const worker = new Worker(new URL('./photo-worker.js', import.meta.url), { type:'module' });
+    const timer = setTimeout(() => { worker.terminate(); reject(new Error('WORKER')); }, 45000);
+    const done = () => { clearTimeout(timer); worker.terminate(); };
+    worker.onmessage = ({ data }) => { done(); data.error ? reject(new Error(data.error)) : resolve(data); };
+    worker.onerror = () => { done(); reject(new Error('WORKER')); };
+    worker.postMessage({ file, limits });
   });
 }
-const asBlob = (canvas, quality) => new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('No pudimos preparar la foto. Prueba con otra imagen.')), 'image/jpeg', quality));
-const asBase64 = blob => new Promise((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onload = () => resolve(String(reader.result).split(',')[1]);
-  reader.onerror = () => reject(new Error('No pudimos leer la imagen.'));
-  reader.readAsDataURL(blob);
-});
-export async function preparePhoto(file, limits) {
-  if (!file || file.size === 0 || file.size > limits.maxOriginalBytes) throw new Error('Selecciona una foto de hasta 20 MB.');
-  if (!/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name) || (file.type && !/^image\/(jpeg|png|webp|heic|heif)$/i.test(file.type))) throw new Error('Usa JPEG, PNG, WebP o una foto HEIC compatible con tu navegador. No se admiten GIF ni SVG.');
-  const image = await loadImage(file);
-  if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > 80000000) throw new Error('La foto es demasiado grande para procesarla aquí. Exporta una versión más pequeña.');
-  const scale = Math.min(1, limits.maxPhotoSide / Math.max(image.naturalWidth, image.naturalHeight));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const context = canvas.getContext('2d', { alpha: false });
-  if (!context) throw new Error('Tu navegador no pudo preparar la imagen.');
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  let blob;
-  for (const quality of [0.86, 0.76, 0.64, 0.5, 0.38]) {
-    blob = await asBlob(canvas, quality);
-    if (blob.size <= limits.maxPhotoBytes) break;
+async function fallback(file, limits) {
+  const url = URL.createObjectURL(file), image = new Image();
+  image.decoding = 'async';
+  try {
+    await new Promise((resolve,reject) => { image.onload = resolve; image.onerror = () => reject(new Error('DECODE')); image.src = url; });
+    if (!image.naturalWidth || image.naturalWidth * image.naturalHeight > 60000000) throw new Error('DIMENSIONS');
+    for (const side of [limits.side,1600,1280,1024,768]) {
+      const ratio = Math.min(1,side / Math.max(image.naturalWidth,image.naturalHeight));
+      const width = Math.max(1,Math.round(image.naturalWidth*ratio)), height = Math.max(1,Math.round(image.naturalHeight*ratio));
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha:false });
+      if (!ctx) throw new Error('DECODE');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,width,height);
+      await tick(); ctx.drawImage(image,0,0,width,height);
+      for (const quality of [.82,.72,.60]) {
+        await tick();
+        const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/jpeg',quality));
+        if (blob?.type === 'image/jpeg' && blob.size <= (quality === .60 ? limits.max : limits.target)) { canvas.width=canvas.height=1; return { blob,width,height }; }
+      }
+      canvas.width=canvas.height=1;
+    }
+    throw new Error('SIZE');
+  } finally { image.src=''; URL.revokeObjectURL(url); }
+}
+export async function preparePhoto(file, config) {
+  if (!file.size || file.size > config.maxOriginalBytes) throw new Error('Elige una foto de hasta 20 MB.');
+  if (!/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name) && !/^image\/(jpeg|png|webp|heic|heif)$/.test(file.type)) throw new Error('Elige una foto JPEG, PNG, WebP o HEIC compatible.');
+  const limits = { side:Math.min(config.maxPhotoSide,2048), target:TARGET, max:Math.min(config.maxPhotoBytes,HARD_MAX) };
+  let result;
+  try {
+    if (typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined') {
+      try { result = await withWorker(file,limits); } catch (error) { if (['SIZE','DIMENSIONS'].includes(error.message)) throw error; }
+    }
+    if (!result) result = await fallback(file,limits);
+    return { ...result, previewUrl:URL.createObjectURL(result.blob) };
+  } catch (error) {
+    if (error.message === 'SIZE') throw new Error('No pudimos reducir esta foto. Elige otra imagen.');
+    if (error.message === 'DIMENSIONS') throw new Error('La imagen es demasiado grande para procesarla en este dispositivo.');
+    throw new Error('Tu navegador no pudo abrirla. Prueba una versión JPEG; HEIC no funciona en todos los teléfonos.');
   }
-  if (blob.size > limits.maxPhotoBytes) throw new Error('La imagen sigue siendo demasiado pesada. Elige una versión más pequeña.');
-  const base64 = await asBase64(blob);
-  const result = { base64, previewUrl: URL.createObjectURL(blob), bytes: blob.size, width: canvas.width, height: canvas.height };
-  canvas.width = canvas.height = 1;
-  image.src = '';
-  return result;
 }

@@ -1,14 +1,16 @@
 {
   "name": "nyx-live-interaction-stage",
-  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "node scripts/dev.mjs",
-    "test": "node --test test/*.test.mjs",
+    "dev": "npm run build && node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
     "export": "node scripts/export.mjs",
-    "purge:local": "node scripts/purge.mjs"
+    "purge:local": "node scripts/purge.mjs",
+    "pretest": "npm run build"
   }
 }

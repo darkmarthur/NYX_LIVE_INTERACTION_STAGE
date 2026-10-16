@@ -1,49 +1,35 @@
 [build]
   command = "npm run build"
-  publish = "public"
+  publish = "dist"
   functions = "netlify/functions"
-
 [build.environment]
   NODE_VERSION = "22"
-
 [functions]
   node_bundler = "esbuild"
-
-[[redirects]]
-  from = "/"
-  to = "/index.html"
-  status = 200
-
 [[redirects]]
   from = "/preguntas"
-  to = "/index.html"
+  to = "/preguntas.html"
   status = 200
-
 [[redirects]]
   from = "/foto"
-  to = "/index.html"
+  to = "/foto.html"
   status = 200
-
 [[redirects]]
   from = "/legal"
-  to = "/index.html"
+  to = "/legal.html"
   status = 200
-
 [[redirects]]
   from = "/preguntas/"
   to = "/preguntas"
   status = 301
-
 [[redirects]]
   from = "/foto/"
   to = "/foto"
   status = 301
-
 [[redirects]]
   from = "/legal/"
   to = "/legal"
   status = 301
-
 [[headers]]
   for = "/*"
   [headers.values]
@@ -51,5 +37,8 @@
     Referrer-Policy = "no-referrer"
     X-Frame-Options = "DENY"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
-    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-    Cache-Control = "no-cache"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

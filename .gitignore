@@ -8,3 +8,5 @@ coverage/
 .DS_Store
 *.log
 test-results/
+dist/
+__pycache__/

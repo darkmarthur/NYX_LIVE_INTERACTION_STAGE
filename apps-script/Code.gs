@@ -1,4 +1,4 @@
-/* NYX v2: carpeta plana de fotos + Google Sheet privado de dos columnas.
+/* NYX UI v3 / storage v2: carpeta plana de fotos + Google Sheet privado de dos columnas.
  * Ejecutar como propietario. No poner secretos en código ni publicar Drive/Sheet.
  * Para una instalación v1 existente: ejecutar migrateToFlatStorage(), NO setupProject().
  */
@@ -33,7 +33,7 @@ function decodeRequest_(e) {
   });
   if (!/^[a-f0-9]{64}$/.test(data.actor || '')) reject_('FORBIDDEN');
   if (Date.now() >= Date.parse(p.getProperty('PURGE_AT')) || p.getProperty('PURGED_AT')) reject_('CLOSED');
-  if (!['status', 'submit', 'withdraw'].includes(data.operation)) reject_('NOT_FOUND');
+  if (!['status', 'submit', 'withdraw', 'withdrawOne'].includes(data.operation)) reject_('NOT_FOUND');
   return data;
 }
 function doPost(e) {
@@ -41,15 +41,17 @@ function doPost(e) {
     var data = decodeRequest_(e);
     var p = props_();
     var key = 'NYX_ACTOR_' + data.actor;
-    if (data.operation === 'status') return output_({ ok: true, data: safeStatus_(JSON.parse(p.getProperty(key) || '{}')) });
+    if (data.operation === 'status') return output_({ ok: true, data: safeStatus_(JSON.parse(p.getProperty(key) || '{}'), data.includePending === true) });
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(5000)) reject_('BUSY');
     try {
       // Recheck after waiting: an administrative migration may have taken the lock.
       if (p.getProperty('MIGRATION_RUNNING') === 'true') reject_('SETUP');
       var record = JSON.parse(p.getProperty(key) || '{}');
-      if (data.operation === 'withdraw') {
-        ['photo', 'text'].forEach(function (kind) {
+      if (data.operation === 'withdraw' || data.operation === 'withdrawOne') {
+        if (data.operation === 'withdrawOne' && !['photo', 'text'].includes(data.kind)) reject_('BAD_REQUEST');
+        var kinds = data.operation === 'withdrawOne' ? [data.kind] : ['photo', 'text'];
+        kinds.forEach(function (kind) {
           if (!record[kind] || record[kind].withdrawn) return;
           var entry = record[kind];
           if (kind === 'photo') {
@@ -62,7 +64,7 @@ function doPost(e) {
           record[kind] = { receipt: entry.receipt, withdrawn: true };
           p.setProperty(key, JSON.stringify(record)); // Persist each withdrawal independently.
         });
-        return output_({ ok: true, data: { withdrawn: true } });
+        return output_({ ok: true, data: { withdrawn: true, kind: data.operation === 'withdrawOne' ? data.kind : 'all' } });
       }
       return output_({ ok: true, data: submit_(data, key, record) });
     } finally { lock.releaseLock(); }
@@ -71,11 +73,12 @@ function doPost(e) {
     return output_({ ok: false, code: allowed.includes(error.message) ? error.message : 'BACKEND' });
   }
 }
-function safeStatus_(record) {
+function safeStatus_(record, includePending) {
   var result = {};
   ['photo', 'text'].forEach(function (kind) {
     var item = record[kind];
     if (item && (item.withdrawn || item.state === 'complete')) result[kind] = { receipt: item.receipt, withdrawn: item.withdrawn === true };
+    else if (includePending && item && item.state === 'pending') result[kind] = { receipt: item.receipt, pending: true, withdrawn: false };
   });
   return result;
 }
