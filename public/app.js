@@ -2,6 +2,9 @@ const $ = selector => document.querySelector(selector);
 const main = $('#main');
 const page = document.body.dataset.page;
 const kind = page === 'photo' ? 'photo' : 'text';
+const urlParams = new URLSearchParams(location.search);
+const enableInteraction = urlParams.getAll('enable').length === 1 && urlParams.get('enable') === 'true';
+const instagramUrl = 'https://www.instagram.com/nyx.sonoro?obrf=MW0xaXA2OHoweHkwMw==';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 let config, session, prepared, busy = false, uncertain = false, photoGeneration = 0;
 
@@ -12,7 +15,8 @@ async function api(path, body, extra = {}) {
   const headers = body ? { 'X-Nyx-Csrf': session?.csrf || '', ...extra } : {};
   if (body && !(body instanceof Blob)) headers['Content-Type'] = 'application/json';
   try {
-    const response = await fetch(path, { method: body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store', headers, body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined, signal:controller.signal });
+    const endpoint = path + (enableInteraction ? '?enable=true' : '');
+    const response = await fetch(endpoint, { method: body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store', headers, body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined, signal:controller.signal });
     const result = await response.json();
     if (result.ok === true) return result.data;
     const error = new Error(result.error?.message || 'No pudimos confirmar la operación.');
@@ -42,7 +46,7 @@ function updatePhase() {
 }
 function showNotice(title, text, retry = false) {
   const panel = $('#panel') || main;
-  panel.innerHTML = `<section class="notice"><h2>${esc(title)}</h2><p>${esc(text)}</p>${retry ? '<button class="secondary" id="reconnect">REINTENTAR CONEXIÓN</button>' : '<a class="secondary" href="/">VOLVER</a>'}</section>`;
+  panel.innerHTML = `<section class="notice"><h2>${esc(title)}</h2><p>${esc(text)}</p>${retry ? '<button class="secondary" id="reconnect">REINTENTAR CONEXIÓN</button>' : ''}</section>`;
   if (retry) $('#reconnect').addEventListener('click', () => location.reload());
 }
 function controls() {
@@ -61,7 +65,7 @@ function receiptView(entry) {
   const cancelled = entry.withdrawn === true;
   const pending = entry.pending === true;
   const label = config.mode === 'demo' ? 'SIMULACIÓN / NO SE GUARDÓ EN GOOGLE' : pending ? 'RECEPCIÓN POR CONFIRMAR' : cancelled ? 'ENVÍO ANULADO' : 'ENVÍO RECIBIDO';
-  $('#piece').innerHTML = `<section class="receipt-panel ${cancelled ? 'cancelled' : ''}" aria-labelledby="result-title"><div class="eyebrow">${label}</div><div class="receipt-mark" aria-hidden="true">${cancelled ? '×' : pending ? '…' : '[✓]'}</div><h1 id="result-title" tabindex="-1">${cancelled ? 'TÚ DECIDES.' : pending ? 'COMPROBANDO.' : 'YA ERES<br><span>PARTE.</span>'}</h1><p>${cancelled ? 'Tu aportación se retiró. No puedes volver a enviar desde este navegador.' : pending ? 'La recepción quedó pendiente. Comprueba su estado o anúlala; no subas otro archivo.' : config.mode === 'demo' ? 'Prueba local: no se utilizará en la obra.' : page === 'photo' ? 'Tu foto fue recibida para la obra.' : 'Tu respuesta fue recibida para la lectura.'}</p><code class="receipt-code">${esc(entry.receipt || '')}</code><div id="receipt-actions" class="actions">${pending ? '<button class="secondary" id="check-status">COMPROBAR ESTADO</button>' : ''}${!cancelled ? '<button class="danger" id="unsend">ANULAR ENVÍO ANTERIOR</button>' : ''}</div><p id="receipt-status" class="status" role="status" aria-live="polite"></p><p class="micro">${cancelled ? 'Las copias locales deben retirarse por el equipo.' : 'Un envío por navegador. Anular no permite volver a enviar.'}</p></section>`;
+  $('#piece').innerHTML = `<section class="receipt-panel ${cancelled ? 'cancelled' : ''}" aria-labelledby="result-title"><div class="eyebrow">${label}</div><div class="receipt-mark" aria-hidden="true">${cancelled ? '×' : pending ? '…' : '[✓]'}</div><h1 id="result-title" tabindex="-1">${cancelled ? 'TÚ DECIDES.' : pending ? 'COMPROBANDO.' : 'YA ERES<br><span>PARTE.</span>'}</h1><p>${cancelled ? 'Tu aportación se retiró. No puedes volver a enviar desde este navegador.' : pending ? 'La recepción quedó pendiente. Comprueba su estado o anúlala; no subas otro archivo.' : config.mode === 'demo' ? 'Prueba local: no se utilizará en la obra.' : page === 'photo' ? 'Tu foto fue recibida para la obra.' : 'Tu respuesta fue recibida para la lectura.'}</p><code class="receipt-code">${esc(entry.receipt || '')}</code><div id="receipt-actions" class="actions">${pending ? '<button class="secondary" id="check-status">COMPROBAR ESTADO</button>' : ''}${!cancelled ? '<button class="danger" id="unsend">ANULAR ENVÍO ANTERIOR</button>' : ''}</div><a class="instagram-after" href="${instagramUrl}" target="_blank" rel="noopener noreferrer">SÍGUENOS EN INSTAGRAM · NYX SONORO ↗</a><p id="receipt-status" class="status" role="status" aria-live="polite"></p><p class="micro">${cancelled ? 'Las copias locales deben retirarse por el equipo.' : 'Un envío por navegador. Anular no permite volver a enviar.'}</p></section>`;
   $('#result-title').focus({ preventScroll:true });
   $('#check-status')?.addEventListener('click', async () => {
     $('#check-status').disabled = true;
@@ -90,6 +94,38 @@ function receiptView(entry) {
     });
   });
 }
+
+let legalOverlay = null;
+async function openLegalOverlay() {
+  if (legalOverlay) { legalOverlay.hidden = false; document.documentElement.classList.add('legal-open'); $('#legal-close').focus(); return; }
+  const { renderLegal } = await import('./legal.js');
+  const overlay = document.createElement('div');
+  overlay.id = 'legal-overlay';
+  overlay.className = 'legal-overlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-label','Términos y privacidad');
+  overlay.innerHTML = '<section class="legal-dialog"><button type="button" id="legal-close" class="legal-close" aria-label="Cerrar aviso legal">CERRAR ×</button><div class="legal legal-body" id="inline-legal-content"></div></section>';
+  document.body.append(overlay);
+  const close = () => { overlay.hidden = true; document.documentElement.classList.remove('legal-open'); $('#terms-open')?.focus(); };
+  $('#legal-close').addEventListener('click', close);
+  overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+  overlay.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); }
+    if (event.key === 'Tab') {
+      const focusable = Array.from(overlay.querySelectorAll('button:not(:disabled),a[href]'));
+      if (!focusable.length) return;
+      const first = focusable[0], last = focusable[focusable.length-1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+  });
+  renderLegal($('#inline-legal-content'), config, esc);
+  document.documentElement.classList.add('legal-open');
+  legalOverlay = overlay;
+  $('#legal-close').focus();
+}
+
 async function bindForm() {
   $('#fields').disabled = false;
   if (page === 'text') {
@@ -120,6 +156,7 @@ async function bindForm() {
       finally { picker.value = ''; $('#photo-frame').dataset.processing = 'false'; controls(); }
     });
   }
+  $('#terms-open').addEventListener('click', openLegalOverlay);
   $('#consent').addEventListener('change', controls);
   $('#contribution').addEventListener('submit', async event => {
     event.preventDefault();
@@ -139,8 +176,8 @@ async function bindForm() {
     }
     message(page === 'photo' ? `Enviando ${Math.ceil(prepared.blob.size / 1024)} KB. Mantén esta página abierta…` : 'Enviando tu respuesta…');
     try {
-      const body = page === 'photo' ? prepared.blob : { answer:$('#answer').value, consent:true, termsVersion:config.termsVersion, website:$('#website').value };
-      const headers = page === 'photo' ? { 'Content-Type':'image/jpeg', 'X-Nyx-Consent':'true', 'X-Nyx-Terms':config.termsVersion, 'X-Nyx-Website':$('#website').value } : {};
+      const body = page === 'photo' ? prepared.blob : { answer:$('#answer').value, consent:true, enable_interaction:enableInteraction === true, termsVersion:config.termsVersion, website:$('#website').value };
+      const headers = page === 'photo' ? { 'Content-Type':'image/jpeg', ...(enableInteraction ? { 'X-Nyx-Enable-Interaction':'true' } : {}), 'X-Nyx-Consent':'true', 'X-Nyx-Terms':config.termsVersion, 'X-Nyx-Website':$('#website').value } : {};
       const result = await api(page === 'photo' ? '/api/photo' : '/api/answer', body, headers);
       receiptView(result);
     } catch (error) {
@@ -152,12 +189,11 @@ async function bindForm() {
 }
 async function boot() {
   try {
-    if (page === 'home' || page === 'legal') {
+    if (page === 'home') return; // Static brand page: zero network calls, no navigation.
+    if (page === 'legal') {
       config = await api('/api/config'); updatePhase();
-      if (page === 'legal') {
-        const { renderLegal } = await import('./legal.js');
-        renderLegal($('#legal-content'), config, esc);
-      }
+      const { renderLegal } = await import('./legal.js');
+      renderLegal($('#legal-content'), config, esc);
       return;
     }
     const state = await api('/api/bootstrap');

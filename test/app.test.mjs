@@ -13,14 +13,14 @@ const headerJpeg = Buffer.from([255,216,255,192,0,17,8,0,10,0,10,3,1,17,0,2,17,0
 function fixture(options = {}) {
   const backend = createDemoBackend();
   const app = createApp({ env, backend, now: () => time, ...options });
-  const request = (path, init = {}) => app(new Request('https://nyx.example' + path, init));
+  const request = (path, init = {}) => app(new Request('https://nyx.example' + path + (path.includes('?') ? '&' : '?') + 'enable=true', init));
   async function session() {
     const response = await request('/api/session');
     assert.equal(response.status, 200);
     return { cookie: response.headers.get('set-cookie').split(';')[0], ...(await response.json()).data };
   }
   function post(path, who, body) {
-    return request(path, { method: 'POST', headers: { 'content-type': 'application/json', origin: env.SITE_ORIGIN, cookie: who.cookie, 'x-nyx-csrf': who.csrf }, body: JSON.stringify(body) });
+    return request(path, { method: 'POST', headers: { 'content-type': 'application/json', origin: env.SITE_ORIGIN, cookie: who.cookie, 'x-nyx-csrf': who.csrf }, body: JSON.stringify({ ...body, enable_interaction:true }) });
   }
   return { backend, app, request, session, post };
 }
@@ -104,7 +104,10 @@ test('Ventanas de cierre y pausa se aplican en el servidor', async () => {
   assert.equal(phaseAt(s, Date.parse('2026-10-24')), 'closed');
   const f = fixture({ env: { ...env, COLLECTION_OPEN: 'false' } });
   const who = await f.session();
-  assert.equal((await f.post('/api/answer', who, { ...consent, answer: 'Hola' })).status, 410);
+  // Old env flag no longer closes the reception if URL + request opt in.
+  assert.equal((await f.post('/api/answer', who, { ...consent, answer: 'Hola' })).status, 200);
+  const withoutQuery = await f.app(new Request('https://nyx.example/api/answer', { method:'POST', headers: { 'content-type':'application/json',origin:env.SITE_ORIGIN,cookie:who.cookie,'x-nyx-csrf':who.csrf },body:JSON.stringify({ ...consent, answer:'Otra persona',enable_interaction:true }) }));
+  assert.equal(withoutQuery.status,410);
 });
 test('Errores del backend nunca se convierten en confirmación falsa', async () => {
   const f = fixture({ backend: async () => { throw new Error('https://private.google/file/secreto'); } });

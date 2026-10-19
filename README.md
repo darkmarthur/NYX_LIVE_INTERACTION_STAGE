@@ -2,22 +2,24 @@
 
 Interacción temporal para NYX Sonoro · Teatro Ocampo · 22 de octubre de 2026.
 
-**Interfaz móvil v3; almacenamiento v2 (sin nueva migración).** Fotos en una carpeta plana privada y respuestas en un Google Sheet independiente con exactamente `Pregunta` y `Respuesta`.
+**Interfaz móvil v4; almacenamiento v2 (sin nueva migración).** Fotos en una carpeta plana privada y respuestas en un Google Sheet independiente con exactamente `Pregunta` y `Respuesta`.
 
 ## Experiencia
 
-- `/foto`: elegir imagen → consentimiento → enviar → confirmación → anular esa foto.
-- `/preguntas`: una de 100 preguntas asignada en servidor → respuesta → consentimiento → enviar → confirmación → anular esa respuesta.
-- `/`: acceso a ambas piezas; usa los enlaces directos anteriores en invitaciones/QR para evitar esta elección.
-- `/legal`: aviso completo, contacto y enlaces para gestionar aportaciones.
+- `/`: banner estático **NYX SONORO / LIVE SET / PERFORMANCE**, sin enlaces a formularios.
+- `/foto?enable=true`: fotografía → consentimiento → enviar → anular esa foto.
+- `/preguntas?enable=true`: pregunta asignada → idea → consentimiento → enviar → anular esa respuesta.
+- Sin `?enable=true` las rutas son de solo lectura: el servidor rechaza nuevos envíos.
+- `/legal`: aviso legal completo accesible directamente. Los términos de los formularios se abren en una ventana sin salir de la ruta.
+- Instagram @nyx.sonoro aparece siempre en el footer y en el mensaje de envío recibido. Es el único enlace de difusión.
 
 Una foto y una respuesta por navegador. Anular **no habilita otro envío** y no afecta al otro tipo de aporte. Sin login, nombres, galería, analítica ni IA externa. Borrar cookies, cambiar de navegador o usar incógnito permite otra identidad; no es una verificación por persona.
 
 ## Actualización desde tu instalación existente
 
-Lee [UI_MOVIL_V3.md](docs/UI_MOVIL_V3.md). **No ejecutes `setupProject()` ni `migrateToFlatStorage()` si ya tienes STORAGE_VERSION=2.** Solo reemplaza `Code.gs` y publica una nueva versión de la misma implementación de Google cuando vayas a activar el cambio. No cambia el manifiesto, el secreto, las carpetas, el Sheet, los scopes, las fechas ni TERMS_VERSION.
+Lee [ACTIVACION_URL_V4.md](docs/ACTIVACION_URL_V4.md) y [UI_MOVIL_V3.md](docs/UI_MOVIL_V3.md) para detalles del diseño base. **No ejecutes `setupProject()` ni `migrateToFlatStorage()` si ya tienes STORAGE_VERSION=2.** Solo reemplaza `Code.gs` y publica una nueva versión de la misma implementación de Google cuando vayas a activar el cambio. No cambia el manifiesto, el secreto, las carpetas, el Sheet, los scopes, las fechas ni TERMS_VERSION.
 
-El commit de esta entrega utiliza `[skip netlify]`; no solicita despliegue. El sitio publicado sigue separado del código del repositorio. No publiques el frontend v3 con un backend Node anterior.
+El commit de esta entrega utiliza `[skip netlify]`; no solicita despliegue. El sitio publicado sigue separado del código del repositorio. No publiques el frontend v4 sin actualizar **ambos** backends (Netlify y Apps Script).
 
 ## Desarrollo local
 
@@ -80,9 +82,9 @@ Variables privadas con alcance Functions (o all):
 | PRIVACY_ADDRESS | Domicilio real del aviso; se publica |
 | PRIVACY_EMAIL | Correo atendido de privacidad; se publica |
 | LEGAL_APPROVED | `true` solo después de revisar aviso y protocolo |
-| COLLECTION_OPEN | `true` para recibir; también debe ser true en Google |
+| COLLECTION_OPEN | **Obsoleta en v4: se ignora tanto en Netlify como en Apps Script.** No es necesario modificarla para abrir o cerrar las rutas. |
 
-Se pueden sobreescribir EVENT_ID, OPENS_AT, CLOSES_AT, PURGE_AT en ambos servicios, siempre con valores iguales. Predeterminados: apertura 8/oct/2026; cierre 22/oct/2026 19:00; limpieza desde 23/oct/2026 10:00, Ciudad de México. Sin configuración real, el sitio muestra preparación y no confirma envíos falsos.
+Se pueden sobreescribir EVENT_ID, OPENS_AT, CLOSES_AT, PURGE_AT en ambos servicios, siempre con valores iguales. Predeterminados: apertura 8/oct/2026; cierre 22/oct/2026 19:00; limpieza desde 23/oct/2026 10:00, Ciudad de México. Sin configuración real (incluyendo `LEGAL_APPROVED=true` y correo válido de privacidad), el sitio no confirma envíos falsos. El query `?enable=true` no sustituye esas condiciones de preparación, consentimiento ni fechas.
 
 Netlify Free conserva sus cuotas y disponibilidad de proveedor. No se contrataron servicios ni se promete gratuidad ilimitada.
 
@@ -93,3 +95,13 @@ Sincroniza la carpeta plana y márcala disponible sin conexión. TouchDesigner p
 Los scripts de exportación y limpieza local de v2 siguen disponibles. El programa no genera el poema ni los visuales.
 
 El disparador `purgeExpired()` intenta borrar definitivamente la carpeta dedicada y el Sheet externo desde PURGE_AT, y elimina registros de Script Properties. Debe verificarse su ejecución. No uses esos destinos para otros documentos. Las copias locales, exportaciones, cachés y respaldos bajo tu control también deben eliminarse; ni el script ni la web garantizan borrado inmediato de respaldos internos de proveedores.
+
+## Apertura mediante URL (v4)
+
+El propio enlace define si una ruta recibe nuevas participaciones: `https://nyxsonoro.netlify.app/foto?enable=true` y `https://nyxsonoro.netlify.app/preguntas?enable=true`. El parámetro debe tener exactamente el valor minúsculo `true` una sola vez. `?enable=TRUE`, `?enable=1` o parámetros ausentes no habilitan. No hace falta cambiar `COLLECTION_OPEN`.
+
+El navegador incluye `?enable=true` en la petición hacia `/api/answer` o `/api/photo` y además transmite `enable_interaction: true` en JSON para texto o `X-Nyx-Enable-Interaction: true` para JPEG binario. Netlify valida ambos antes de enviar y transmite el booleano firmado `enableInteraction: true` a Apps Script, que lo comprueba antes de escribir. Otras rutas solo permiten consultar y anular aportaciones propias aunque no tengan la bandera, para no bloquear la retirada de consentimiento.
+
+**Esto no es una contraseña ni un sistema de cierre global.** Cualquiera con el enlace habilitado puede participar. Como el parámetro se puede copiar o volver a añadir, **quitarlo del QR no cancela enlaces ya compartidos ni cierra el endpoint públicamente**: para un cierre global inmediato habría que añadir un control administrativo aparte. Se mantienen las fechas `CLOSES_AT`, `PURGE_AT`, límites, cookies, validación y el consentimiento, y la desactivación manual ya no se usa. Mantén la protección antiabuso propia del evento.
+
+Los enlaces a términos funcionan dentro de un diálogo modal; el logo no navega al home. El enlace externo a Instagram es la excepción intencional a la navegación fija. Enviar nuevas fotos o respuestas requiere conexión, aunque el frontend siga siendo ligero.

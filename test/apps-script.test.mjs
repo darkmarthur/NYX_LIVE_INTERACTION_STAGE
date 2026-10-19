@@ -147,7 +147,7 @@ function fixture({ legacy = false, empty = false } = {}) {
     const ts = clock.value, nonce = 'b'.repeat(32), payload = Buffer.from(JSON.stringify({ ...common, ...data })).toString('base64');
     return { ts, nonce, payload, signature: createHmac('sha256', settings.BRIDGE_SECRET).update(`${ts}.${nonce}.${payload}`).digest('hex') };
   }
-  const send = data => JSON.parse(context.doPost({ postData: { contents: JSON.stringify(envelope(data)) } }).text);
+  const send = data => JSON.parse(context.doPost({ postData: { contents: JSON.stringify(envelope(data.operation==='submit' && data.enableInteraction === undefined ? {...data,enableInteraction:true} : data)) } }).text);
   return { send, envelope, context, settings, files, books, removed, controls, clock, add, triggers, batches, sheet: () => sheetOf(settings.SPREADSHEET_ID) };
 }
 const answer = { operation:'submit',kind:'text',consent:true,questionId:1,question:'¿Qué recuerdas?',answer:'Un patio lleno de luz.' };
@@ -225,7 +225,7 @@ test('Sin consentimiento, versión distinta, cupo, cierre y bloqueo',()=>{
  const f=fixture(); assert.equal(f.send({...answer,consent:false}).code,'CONSENT');
  assert.equal(f.send({...answer,termsVersion:'2026-10-08-v1'}).code,'SETUP');
  f.settings.MAX_PER_KIND='1'; f.send(answer); assert.equal(f.send({...answer,actor:'c'.repeat(64)}).code,'FULL');
- f.settings.COLLECTION_OPEN='false'; assert.equal(f.send(photo).code,'CLOSED');
+ f.settings.COLLECTION_OPEN='false'; assert.equal(f.send({...photo,enableInteraction:false}).code,'CLOSED'); assert.equal(f.send(photo).ok,true);
  f.controls.lock=false; assert.equal(f.send(photo).code,'BUSY');
 });
 test('Rechaza JPEG y texto inválidos antes de reservar una aportación',()=>{

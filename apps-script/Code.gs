@@ -94,7 +94,9 @@ function photoBlob_(image, receipt) {
 }
 function submit_(data, key, record) {
   var p = props_();
-  if (p.getProperty('COLLECTION_OPEN') !== 'true' || Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
+  // This flag arrives only from the Netlify bridge in a signed payload.
+  // The legacy COLLECTION_OPEN Script Property is no longer consulted.
+  if (data.enableInteraction !== true || Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
   if (data.consent !== true) reject_('CONSENT');
   if (!['photo', 'text'].includes(data.kind)) reject_('BAD_REQUEST');
   var entry = record[data.kind];

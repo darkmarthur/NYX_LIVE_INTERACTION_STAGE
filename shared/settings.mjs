@@ -28,7 +28,9 @@ export function settingsFrom(env, allowHttp = false) {
   const origin = env.SITE_ORIGIN || '';
   const validOrigin = /^https:\/\/[^/]+$/.test(origin) || (allowHttp && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin));
   s.ready = Boolean(validOrigin && /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(env.APPS_SCRIPT_URL || '') && (env.BRIDGE_SECRET || '').length >= 32 && s.controller && s.address && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.contact) && env.LEGAL_APPROVED === 'true');
-  s.collectionOpen = env.COLLECTION_OPEN === 'true';
+  // Legacy COLLECTION_OPEN is deliberately ignored. Participation is now
+  // enabled per request with the ?enable=true URL plus a POST flag.
+  s.collectionOpen = true;
   return s;
 }
 

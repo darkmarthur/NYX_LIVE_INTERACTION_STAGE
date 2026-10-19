@@ -14,17 +14,18 @@ MOCK='''({config,question}) => {
  window.__calls=[];window.__state={csrf:'test-only',question:{id:99,text:question},photo:null,text:null};
  window.__failNext=false;
  window.fetch=async(path,options={})=>{
-   window.__calls.push({path,method:options.method,bytes:options.body?.size||options.body?.length||0,contentType:options.headers?.['Content-Type']});
+   window.__calls.push({path:path.split('?')[0],url:path,method:options.method,bytes:options.body?.size||options.body?.length||0,contentType:options.headers?.['Content-Type']});
    let data;
-   if(path==='/api/config') data=config;
-   else if(path==='/api/bootstrap') data={config,session:window.__state};
-   else if(path==='/api/session') data=window.__state;
-   else if(path==='/api/withdraw') {let kind=JSON.parse(options.body).kind;window.__state[kind]={...window.__state[kind],withdrawn:true};data={withdrawn:true,kind};}
-   else {let kind=path==='/api/photo'?'photo':'text';let receipt='NYX-1234567890abcdef1234567890abcdef';window.__state[kind]={submitted:true,receipt};data={receipt};if(window.__failNext){window.__failNext=false;throw new TypeError('offline after write');}}
+   const pathname=path.split('?')[0];
+   if(pathname==='/api/config') data=config;
+   else if(pathname==='/api/bootstrap') data={config,session:window.__state};
+   else if(pathname==='/api/session') data=window.__state;
+   else if(pathname==='/api/withdraw') {let kind=JSON.parse(options.body).kind;window.__state[kind]={...window.__state[kind],withdrawn:true};data={withdrawn:true,kind};}
+   else {let kind=pathname==='/api/photo'?'photo':'text';let receipt='NYX-1234567890abcdef1234567890abcdef';window.__state[kind]={submitted:true,receipt};data={receipt};if(window.__failNext){window.__failNext=false;throw new TypeError('offline after write');}}
    return new Response(JSON.stringify({ok:true,data}),{headers:{'Content-Type':'application/json'}});
  };
 }'''
-APP=(ASSETS/'app.js').read_text().replace("import('./photo.js')","Promise.resolve(window.__photo)").replace("import('./legal.js')","Promise.resolve(window.__legal)")
+APP=(ASSETS/'app.js').read_text().replace("import('./photo.js')","Promise.resolve(window.__photo)").replace("import('./legal.js')","Promise.resolve(window.__legal)").replace('new URLSearchParams(location.search)',"new URLSearchParams('?enable=true')")
 PHOTO=(ASSETS/'photo.js').read_text().replace('export async function preparePhoto','async function preparePhoto').replace("new URL('./photo-worker.js', import.meta.url)",'window.__workerURL')
 LEGAL=(ASSETS/'legal.js').read_text().replace('export function renderLegal','function renderLegal')
 def load(page,path,config=CONFIG,question=QUESTION,fallback=False):
@@ -39,7 +40,7 @@ def load(page,path,config=CONFIG,question=QUESTION,fallback=False):
     page.evaluate('window.__legal=(()=>{'+LEGAL+';return {renderLegal};})()')
     if fallback:page.evaluate('window.Worker=undefined')
     page.evaluate('()=>{'+APP+'}')
-    page.wait_for_function("document.querySelector('#phase').textContent !== 'CONECTANDO'")
+    if path != '/': page.wait_for_function("document.querySelector('#phase').textContent !== 'CONECTANDO'")
 def dimensions(page):
     return page.evaluate('''() => ({height:innerHeight,scroll:document.documentElement.scrollHeight,width:innerWidth,scrollWidth:document.documentElement.scrollWidth,send:document.querySelector('#send')?.getBoundingClientRect().bottom})''')
 if not (OUT/'nyx-test-photo.jpg').exists():
