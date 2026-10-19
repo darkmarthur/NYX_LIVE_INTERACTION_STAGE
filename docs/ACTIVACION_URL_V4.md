@@ -26,7 +26,7 @@ Se conserva el nombre artístico **NYX Sonoro**; la única expresión en inglés
 1. En tu proyecto de Apps Script existente, reemplaza **solo** `Code.gs` desde `apps-script/Code.gs`; guarda. No borres las propiedades ni crees otra carpeta ni hoja.
 2. Implementar → Administrar implementaciones → lápiz → **Nueva versión** → Implementar. Mantén la misma URL `/exec`.
 3. Publica el commit v4 de `main` en Netlify utilizando la build normal (`npm run build`, carpeta `dist` más Netlify Function).
-4. Conserva `APPS_SCRIPT_URL`, `BRIDGE_SECRET`, `SITE_ORIGIN`, `TERMS_VERSION=2026-10-15-v2` y el aviso legal aprobado. El `COLLECTION_OPEN` existente puede dejarse en cualquier valor: se ignora.
+4. Conserva `APPS_SCRIPT_URL`, `BRIDGE_SECRET`, `SITE_ORIGIN` y `TERMS_VERSION=2026-10-15-v2`. El antiguo `COLLECTION_OPEN`, `LEGAL_APPROVED` y el formato de `PRIVACY_EMAIL` no son interruptores de activación. **Corrige el aviso legal y un correo real de contacto antes de recopilar datos personales**, aunque eso no bloquee el formulario.
 5. Ensaya usando fotos/textos ficticios: sin query, con query equivocado, con query correcto, subida, confirmación y anulación. Revisa Drive/Sheet y comprueba que no aparece nada cuando falta habilitación.
 
 **No ejecutes `setupProject`, `migrateToFlatStorage` ni `purgeExpired`.** No hay migración del esquema.

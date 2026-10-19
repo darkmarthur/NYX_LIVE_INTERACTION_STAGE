@@ -6,7 +6,7 @@ import { createDemoBackend } from '../scripts/demo.mjs';
 
 const now=Date.parse('2026-10-18T18:00:00-06:00');
 const origin='https://nyx.example';
-const env={BRIDGE_SECRET:'test-query-activation-'.repeat(3),APPS_SCRIPT_URL:'https://script.google.com/macros/s/testing/exec',SITE_ORIGIN:origin,PRIVACY_CONTROLLER:'Responsable',PRIVACY_ADDRESS:'Contacto',PRIVACY_EMAIL:'contacto@example.com',LEGAL_APPROVED:'true',COLLECTION_OPEN:'false'};
+const env={BRIDGE_SECRET:'test-query-activation-'.repeat(3),APPS_SCRIPT_URL:'https://script.google.com/macros/s/testing/exec',SITE_ORIGIN:origin,PRIVACY_CONTROLLER:'Responsable',PRIVACY_ADDRESS:'Contacto',PRIVACY_EMAIL:'MARIODOMINGUEZ',LEGAL_APPROVED:'false',COLLECTION_OPEN:'false'};
 const jpeg=Buffer.from([255,216,255,192,0,17,8,0,10,0,10,3,1,17,0,2,17,0,3,17,0,255,218,0,8,1,1,0,0,63,0,0,255,217]);
 function fixture(){
   const backend=createDemoBackend(), calls=[];
@@ -76,4 +76,17 @@ test('No internal navigation from home or participant pages; Instagram intention
   assert.ok(photo.includes('¿QUÉ IMAGEN'));
   assert.ok(photo.includes('Un recuerdo de tu celular a la pantalla grande.'));
   assert.ok(readFileSync(new URL('../public/app.js',import.meta.url),'utf8').includes('SÍGUENOS EN INSTAGRAM'));
+});
+
+test('An unapproved notice flag or non-email contact is NOT a hidden activation switch',async()=>{
+  const f=fixture();
+  const first=await f.request('/api/bootstrap?enable=true');
+  const {config,session}=(await first.json()).data;
+  assert.equal(config.ready,true);
+  assert.equal(config.phase,'open');
+  const cookie=first.headers.get('set-cookie').split(';')[0];
+  const sent=await f.post('/api/answer',cookie,session.csrf,{answer:'Un momento feliz.',consent:true,termsVersion:'2026-10-15-v2',website:'',enable_interaction:true});
+  assert.equal(sent.status,200);
+  const off=await f.request('/api/bootstrap');
+  assert.equal((await off.json()).data.config.phase,'paused');
 });

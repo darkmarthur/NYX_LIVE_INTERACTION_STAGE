@@ -81,10 +81,10 @@ Variables privadas con alcance Functions (o all):
 | PRIVACY_CONTROLLER | Responsable real; se publica en el aviso |
 | PRIVACY_ADDRESS | Domicilio real del aviso; se publica |
 | PRIVACY_EMAIL | Correo atendido de privacidad; se publica |
-| LEGAL_APPROVED | `true` solo después de revisar aviso y protocolo |
+| LEGAL_APPROVED | Referencia administrativa opcional; **no es un interruptor** de interacción en v4 |
 | COLLECTION_OPEN | **Obsoleta en v4: se ignora tanto en Netlify como en Apps Script.** No es necesario modificarla para abrir o cerrar las rutas. |
 
-Se pueden sobreescribir EVENT_ID, OPENS_AT, CLOSES_AT, PURGE_AT en ambos servicios, siempre con valores iguales. Predeterminados: apertura 8/oct/2026; cierre 22/oct/2026 19:00; limpieza desde 23/oct/2026 10:00, Ciudad de México. Sin configuración real (incluyendo `LEGAL_APPROVED=true` y correo válido de privacidad), el sitio no confirma envíos falsos. El query `?enable=true` no sustituye esas condiciones de preparación, consentimiento ni fechas.
+Se pueden sobreescribir EVENT_ID, OPENS_AT, CLOSES_AT, PURGE_AT en ambos servicios, siempre con valores iguales. Predeterminados: apertura 8/oct/2026; cierre 22/oct/2026 19:00; limpieza desde 23/oct/2026 10:00, Ciudad de México. Sin conexión técnica real (SITE_ORIGIN, APPS_SCRIPT_URL, BRIDGE_SECRET), el sitio no confirma envíos falsos. `LEGAL_APPROVED` y la validación del formato de `PRIVACY_EMAIL` **no bloquean** el formulario. La URL `?enable=true` controla exclusivamente la habilitación, con los límites técnicos, consentimiento y fechas vigentes. **Revisa y completa el aviso de privacidad antes de recibir aportaciones reales**, aunque el sistema no lo impida.
 
 Netlify Free conserva sus cuotas y disponibilidad de proveedor. No se contrataron servicios ni se promete gratuidad ilimitada.
 
