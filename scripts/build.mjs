@@ -8,6 +8,7 @@ import { QUESTIONS } from '../shared/questions.mjs';
 import { PAGES } from './pages.mjs';
 import { CALENDAR_FILE, calendarFile, eventHTML, eventClientScript, EVENT_CSS } from './event.mjs';
 import { ambientClientScript, AMBIENT_CSS } from './ambient.mjs';
+import { TRANSFER_CSS } from './transfer.mjs';
 assert.equal(QUESTIONS.length,100); assert.equal(new Set(QUESTIONS).size,100);
 for (const dir of ['public','server','shared','scripts','netlify/functions']) {
   for (const name of await readdir(dir)) {
@@ -24,7 +25,7 @@ const contents = Object.fromEntries(await Promise.all(names.map(async n => [n,aw
 assert.ok(/\nboot\(\);\s*$/.test(contents['app.js']), 'Revisar el inicio de la interfaz antes de integrar el fondo');
 contents['app.js'] = contents['app.js'].replace(/\nboot\(\);\s*$/, '\nconst nyxBootReady = boot();\n');
 contents['app.js'] += eventClientScript() + ambientClientScript();
-contents['styles.css'] += EVENT_CSS + AMBIENT_CSS;
+contents['styles.css'] += TRANSFER_CSS + EVENT_CSS + AMBIENT_CSS;
 const version = createHash('sha256').update(names.map(n => n+'\0'+contents[n]).join('\0')).digest('hex').slice(0,12);
 await rm('dist',{recursive:true,force:true});
 await mkdir(`dist/assets/${version}`,{recursive:true});

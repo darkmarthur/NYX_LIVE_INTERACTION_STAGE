@@ -1,7 +1,8 @@
-/* NYX UI v3 / storage v2: carpeta plana de fotos + Google Sheet privado de dos columnas.
+/* NYX reenvío v5 / storage v2: carpeta plana de fotos + Google Sheet privado de dos columnas.
  * Ejecutar como propietario. No poner secretos en código ni publicar Drive/Sheet.
  * Para una instalación v1 existente: ejecutar migrateToFlatStorage(), NO setupProject().
  */
+var NYX_RECEIVER_VERSION = '2026-10-21-resend-v5';
 var NYX_STORAGE_VERSION = '2';
 var NYX_TERMS_VERSION = '2026-10-15-v2';
 var NYX_SHEET_TITLE = 'Respuestas';
@@ -16,7 +17,11 @@ function same_(a, b) {
   for (var i = 0; i < a.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return difference === 0;
 }
-function doGet() { return output_({ ok: false, code: 'METHOD' }); }
+// Solo identifica el código publicado. No consulta ni expone datos o secretos.
+// Ver ok:true aquí NO equivale a probar una subida ni sus permisos.
+function doGet() {
+  return output_({ ok: true, service: 'NYX', version: NYX_RECEIVER_VERSION });
+}
 function decodeRequest_(e) {
   if (!e || !e.postData || typeof e.postData.contents !== 'string' || e.postData.contents.length > 2000000) reject_('BAD_REQUEST');
   var envelope = JSON.parse(e.postData.contents);
@@ -47,10 +52,20 @@ function doPost(e) {
     try {
       // Recheck after waiting: an administrative migration may have taken the lock.
       if (p.getProperty('MIGRATION_RUNNING') === 'true') reject_('SETUP');
+      // La limpieza pudo adquirir el bloqueo antes que este request.
+      if (p.getProperty('PURGED_AT') || Date.now() >= Date.parse(p.getProperty('PURGE_AT'))) reject_('CLOSED');
       var record = JSON.parse(p.getProperty(key) || '{}');
       if (data.operation === 'withdraw' || data.operation === 'withdrawOne') {
         if (data.operation === 'withdrawOne' && !['photo', 'text'].includes(data.kind)) reject_('BAD_REQUEST');
         var kinds = data.operation === 'withdrawOne' ? [data.kind] : ['photo', 'text'];
+        // A delayed withdrawal must never delete a more recent replacement.
+        // First-generation legacy clients remain compatible; replacements require a receipt.
+        kinds.forEach(function (kind) {
+          var item = record[kind];
+          if (!item) return;
+          if (data.operation === 'withdrawOne' && data.receipt !== undefined && data.receipt !== item.receipt) reject_('STALE');
+          if (item.replacesReceipt && (!data.receipt || data.receipt !== item.receipt)) reject_('STALE');
+        });
         kinds.forEach(function (kind) {
           if (!record[kind] || record[kind].withdrawn) return;
           var entry = record[kind];
@@ -61,7 +76,7 @@ function doPost(e) {
             deleteResponse_(entry.receipt);
             if (entry.fileId) deleteFile_(entry.fileId); // Interrupted legacy migration.
           }
-          record[kind] = { receipt: entry.receipt, withdrawn: true };
+          record[kind] = { receipt: entry.receipt, withdrawn: true, replacesReceipt: entry.replacesReceipt || null };
           p.setProperty(key, JSON.stringify(record)); // Persist each withdrawal independently.
         });
         return output_({ ok: true, data: { withdrawn: true, kind: data.operation === 'withdrawOne' ? data.kind : 'all' } });
@@ -69,7 +84,7 @@ function doPost(e) {
       return output_({ ok: true, data: submit_(data, key, record) });
     } finally { lock.releaseLock(); }
   } catch (error) {
-    var allowed = ['BAD_REQUEST', 'FORBIDDEN', 'SETUP', 'CLOSED', 'BUSY', 'FULL', 'WITHDRAWN', 'CONSENT', 'INVALID_TEXT', 'INVALID_IMAGE', 'NOT_FOUND'];
+    var allowed = ['BAD_REQUEST', 'FORBIDDEN', 'SETUP', 'CLOSED', 'BUSY', 'FULL', 'WITHDRAWN', 'CONSENT', 'INVALID_TEXT', 'INVALID_IMAGE', 'NOT_FOUND', 'STALE'];
     return output_({ ok: false, code: allowed.includes(error.message) ? error.message : 'BACKEND' });
   }
 }
@@ -94,13 +109,23 @@ function photoBlob_(image, receipt) {
 }
 function submit_(data, key, record) {
   var p = props_();
-  // This flag arrives only from the Netlify bridge in a signed payload.
-  // The legacy COLLECTION_OPEN Script Property is no longer consulted.
-  if (data.enableInteraction !== true || Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
+  // Netlify traduce ?enable=true + el flag del envío a este booleano firmado.
+  // No se acepta un parámetro público de Google ni se consulta COLLECTION_OPEN.
+  if (data.enableInteraction !== true) reject_('CLOSED');
+  if (Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
   if (data.consent !== true) reject_('CONSENT');
   if (!['photo', 'text'].includes(data.kind)) reject_('BAD_REQUEST');
   var entry = record[data.kind];
-  if (entry && entry.withdrawn) reject_('WITHDRAWN');
+  // Replacement is scoped to the cancelled receipt, not merely to this browser.
+  // This fences delayed POST retries and stale tabs without a new database or migration.
+  var replaces = data.replacesReceipt || null;
+  if (replaces && !/^NYX-[a-f0-9]{32}$/.test(replaces)) reject_('BAD_REQUEST');
+  if (entry && entry.withdrawn) {
+    if (replaces !== entry.receipt) reject_('STALE');
+    entry = null;
+  } else if ((entry ? entry.replacesReceipt || null : null) !== replaces) {
+    reject_('STALE');
+  }
   if (entry && entry.state === 'complete') return { receipt: entry.receipt, duplicate: true };
   if (data.kind === 'text') {
     validateText_(data.question, data.answer);
@@ -109,11 +134,15 @@ function submit_(data, key, record) {
   var digest = hex_(Utilities.computeHmacSha256Signature(JSON.stringify(data.kind === 'text' ? [data.questionId, data.question, data.answer] : [data.image]), p.getProperty('BRIDGE_SECRET'), Utilities.Charset.UTF_8));
   if (!entry) {
     var all = p.getProperties();
-    var count = Object.keys(all).filter(function (k) { return k.indexOf('NYX_ACTOR_') === 0 && JSON.parse(all[k])[data.kind]; }).length;
+    var count = Object.keys(all).filter(function (k) {
+      if (k.indexOf('NYX_ACTOR_') !== 0) return false;
+      var active = JSON.parse(all[k])[data.kind];
+      return active && active.withdrawn !== true;
+    }).length;
     var max = Number(p.getProperty('MAX_PER_KIND') || '100');
     if (!Number.isInteger(max) || max < 1 || max > 500) reject_('SETUP');
     if (count >= max) reject_('FULL');
-    entry = { receipt: 'NYX-' + Utilities.getUuid().replace(/-/g, ''), createdAt: new Date().toISOString(), termsVersion: data.termsVersion, consent: true, state: 'pending', digest: digest };
+    entry = { receipt: 'NYX-' + Utilities.getUuid().replace(/-/g, ''), createdAt: new Date().toISOString(), termsVersion: data.termsVersion, consent: true, state: 'pending', digest: digest, replacesReceipt: replaces };
     record[data.kind] = entry;
     p.setProperty(key, JSON.stringify(record)); // Reserve before writing to make retries recoverable.
   }
@@ -374,4 +403,120 @@ function purgeExpired() {
     p.setProperty('PURGED_AT', new Date().toISOString());
     ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'purgeExpired'; }).forEach(function (t) { ScriptApp.deleteTrigger(t); });
   } finally { lock.releaseLock(); }
+}
+
+/**
+ * DIAGNÓSTICO OPCIONAL: ejecutar desde el editor como propietario.
+ * Solo lee propiedades, metadatos, encabezados y disparadores.
+ * NO crea carpetas, NO modifica filas, NO borra archivos y NO muestra la clave.
+ * No verifica que la clave de Netlify coincida ni sustituye un envío real.
+ */
+function diagnosticarNYX() {
+  var p = props_();
+  var errores = [];
+  var avisos = [];
+  function revisar(condicion, mensaje) { if (!condicion) errores.push(mensaje); }
+  revisar((p.getProperty('BRIDGE_SECRET') || '').length >= 32,
+    'Falta BRIDGE_SECRET o tiene menos de 32 caracteres. Conserva la misma clave que Netlify.');
+  revisar(p.getProperty('STORAGE_VERSION') === NYX_STORAGE_VERSION,
+    'STORAGE_VERSION debe ser 2. No reinicialices el proyecto.');
+  revisar(p.getProperty('EVENT_ID') === 'nyx-ocampo-2026',
+    'EVENT_ID no coincide con nyx-ocampo-2026. Debe coincidir con Netlify.');
+  revisar(p.getProperty('TERMS_VERSION') === NYX_TERMS_VERSION,
+    'TERMS_VERSION debe coincidir con Netlify: ' + NYX_TERMS_VERSION + '.');
+  revisar(p.getProperty('MIGRATION_RUNNING') !== 'true',
+    'La migración está marcada en curso. No borres esta propiedad sin resolver la migración.');
+  revisar(!p.getProperty('PURGED_AT'),
+    'La colección ya está marcada como eliminada. No borres esa marca para reutilizarla.');
+  var max = Number(p.getProperty('MAX_PER_KIND') || '100');
+  revisar(Number.isInteger(max) && max >= 1 && max <= 500,
+    'MAX_PER_KIND debe ser un entero entre 1 y 500.');
+
+  var apertura = Date.parse(p.getProperty('OPENS_AT'));
+  var cierre = Date.parse(p.getProperty('CLOSES_AT'));
+  var limpieza = Date.parse(p.getProperty('PURGE_AT'));
+  var fechasValidas = [apertura, cierre, limpieza].every(function (n) { return Number.isFinite(n); }) &&
+    apertura < cierre && cierre < limpieza;
+  revisar(fechasValidas, 'OPENS_AT, CLOSES_AT y PURGE_AT deben ser fechas válidas y estar ordenadas.');
+  if (fechasValidas) {
+    revisar(Date.now() >= apertura, 'Todavía no llega OPENS_AT; la recepción no está abierta por fecha.');
+    revisar(Date.now() < cierre, 'Ya pasó CLOSES_AT; la recepción está cerrada por fecha.');
+    revisar(Date.now() < limpieza, 'Ya pasó PURGE_AT; no reutilices esta colección.');
+  }
+
+  var rootId = p.getProperty('ROOT_FOLDER_ID');
+  var bookId = p.getProperty('SPREADSHEET_ID');
+  var tabId = p.getProperty('RESPONSE_SHEET_ID');
+  revisar(Boolean(rootId), 'Falta ROOT_FOLDER_ID. No crees otra carpeta con el mismo nombre.');
+  revisar(Boolean(bookId), 'Falta SPREADSHEET_ID.');
+  revisar(tabId !== null && /^\d+$/.test(tabId), 'Falta RESPONSE_SHEET_ID o no es válido; 0 sí es válido.');
+  revisar(p.getProperty('SHEET_INITIALIZED') === 'true', 'SHEET_INITIALIZED no está marcado como true.');
+
+  if (rootId) {
+    try {
+      var folder = Drive.Files.get(rootId, {
+        fields: 'id,mimeType,description,trashed,capabilities(canAddChildren)'
+      });
+      revisar(folder.mimeType === 'application/vnd.google-apps.folder', 'ROOT_FOLDER_ID no identifica una carpeta.');
+      revisar(!folder.trashed, 'La carpeta de fotografías está en la papelera. Restáurala.');
+      revisar(folder.description === 'NYX_MVP:' + p.getProperty('EVENT_ID'),
+        'La carpeta no tiene el marcador NYX esperado; no se modificó.');
+      revisar(Boolean(folder.capabilities && folder.capabilities.canAddChildren),
+        'La cuenta que ejecuta el script no puede añadir archivos a la carpeta.');
+    } catch (_) {
+      errores.push('No se pudo consultar la carpeta. Verifica Drive v3, permisos y ROOT_FOLDER_ID.');
+    }
+  }
+  if (bookId) {
+    try {
+      var book = Drive.Files.get(bookId, {
+        fields: 'id,mimeType,description,trashed,parents,capabilities(canEdit)'
+      });
+      revisar(book.mimeType === 'application/vnd.google-apps.spreadsheet',
+        'SPREADSHEET_ID no identifica un Google Sheet.');
+      revisar(!book.trashed, 'La hoja de respuestas está en la papelera. Restáurala.');
+      revisar(book.description === 'NYX_SHEET:' + p.getProperty('EVENT_ID'),
+        'La hoja no tiene el marcador NYX esperado; no se modificó.');
+      revisar(!(book.parents || []).includes(rootId), 'La hoja debe estar fuera de la carpeta de fotos.');
+      revisar(Boolean(book.capabilities && book.capabilities.canEdit),
+        'La cuenta que ejecuta el script no tiene permiso para editar la hoja.');
+      var workbook = Sheets.Spreadsheets.get(bookId, {
+        fields: 'sheets(properties(sheetId,title,gridProperties(columnCount)))'
+      });
+      var tab = (workbook.sheets || []).find(function (s) {
+        return s.properties.sheetId === Number(tabId);
+      });
+      revisar(Boolean(tab), 'RESPONSE_SHEET_ID no corresponde a una pestaña existente.');
+      if (tab) {
+        revisar(tab.properties.title === NYX_SHEET_TITLE, 'La pestaña debe llamarse Respuestas.');
+        revisar(tab.properties.gridProperties.columnCount === 2, 'La pestaña debe tener exactamente dos columnas.');
+        var header = (Sheets.Spreadsheets.Values.get(bookId, "'Respuestas'!A1:B1").values || [])[0] || [];
+        revisar(header[0] === 'Pregunta' && header[1] === 'Respuesta',
+          'Los encabezados A1 y B1 deben ser Pregunta y Respuesta.');
+      }
+    } catch (_) {
+      errores.push('No se pudo consultar la hoja. Verifica Sheets v4, Drive v3, permisos y SPREADSHEET_ID.');
+    }
+  }
+  try {
+    var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
+      return t.getHandlerFunction() === 'purgeExpired';
+    });
+    if (!triggers.length) avisos.push('No se encontró el disparador de limpieza para esta cuenta. Revisa los activadores.');
+  } catch (_) { avisos.push('No se pudieron revisar los activadores de limpieza.'); }
+
+  var informe = {
+    ESTADO: errores.length ? 'REVISAR_CONFIGURACION' : 'LISTO_EN_GOOGLE',
+    VERSION: NYX_RECEIVER_VERSION,
+    APERTURA: p.getProperty('OPENS_AT'),
+    CIERRE: p.getProperty('CLOSES_AT'),
+    LIMPIEZA: p.getProperty('PURGE_AT'),
+    ACTIVACION: 'enableInteraction=true recibido desde Netlify con firma válida',
+    COLLECTION_OPEN: 'IGNORADO: ya no controla la recepción',
+    ERRORES: errores,
+    AVISOS: avisos,
+    SIGUIENTE_PASO: 'Publica esta versión y prueba desde /foto?enable=true y /preguntas?enable=true. Esta revisión no prueba Netlify.'
+  };
+  console.log(JSON.stringify(informe, null, 2));
+  return informe;
 }

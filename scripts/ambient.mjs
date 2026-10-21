@@ -6,7 +6,7 @@ export function ambientClientScript() {
   let attempted = false, timer = 0, idle = 0, observer;
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-  const isBusy = () => busy || uncertain || document.querySelector('#confirm-unsend')?.disabled === true || document.querySelector('#check-status')?.disabled === true || document.querySelector('#photo-frame')?.dataset.processing === 'true' || document.documentElement.classList.contains('legal-open');
+  const isBusy = () => busy || uncertain || document.documentElement.classList.contains('nyx-sending') || document.querySelector('#confirm-unsend')?.disabled === true || document.querySelector('#check-status')?.disabled === true || document.querySelector('#photo-frame')?.dataset.processing === 'true' || document.documentElement.classList.contains('legal-open');
   const isEditing = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   const allowed = () => !motion.matches && navigator.onLine !== false && !connection?.saveData && !/^(slow-)?2g$/.test(connection?.effectiveType || '');
   function clearSchedule() {
@@ -31,11 +31,10 @@ export function ambientClientScript() {
   function schedule() {
     clearSchedule();
     if (attempted || !allowed() || document.hidden || isBusy() || isEditing()) return;
-    // Run after the usable form + window.load, then a quiet gap, then idle time.
     timer = window.setTimeout(() => {
       timer = 0;
       if (typeof window.requestIdleCallback === 'function') idle = window.requestIdleCallback(load);
-      else timer = window.setTimeout(load, 300); // Older Safari: no idle API required.
+      else timer = window.setTimeout(load, 300);
     }, 1200);
   }
   function ready() {
@@ -45,6 +44,7 @@ export function ambientClientScript() {
     window.addEventListener('online', schedule);
     observer = new MutationObserver(schedule);
     observer.observe(main, { subtree:true, childList:true, attributes:true, attributeFilter:['disabled','data-processing'] });
+    observer.observe(document.documentElement, { attributes:true, attributeFilter:['class'] });
     schedule();
   }
   nyxBootReady.then(() => {
@@ -57,6 +57,6 @@ export function ambientClientScript() {
 export const AMBIENT_CSS = `
 /* Decoration never intercepts input or changes document dimensions. */
 .nyx-ambient{position:fixed;inset:0;display:block;width:100%;height:100%;z-index:0;pointer-events:none;opacity:0;transition:opacity 1.8s ease}
-.nyx-ambient.is-visible{opacity:1}.shell{position:relative;z-index:1;background:linear-gradient(90deg,#050505e0,#0505059c 45%,#050505d9)}
+.nyx-ambient.is-visible{opacity:1}.shell{position:relative;z-index:1;background:linear-gradient(90deg,#050505cc,#05050570 45%,#050505c4)}
 @media(prefers-reduced-motion:reduce){.nyx-ambient{display:none;transition:none}}
 `;

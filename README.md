@@ -13,7 +13,7 @@ Interacción temporal para NYX Sonoro · Teatro Ocampo · 22 de octubre de 2026.
 - `/legal`: aviso legal completo accesible directamente. Los términos de los formularios se abren en una ventana sin salir de la ruta.
 - Instagram @nyx.sonoro aparece siempre en el footer y en el mensaje de envío recibido. Es el único enlace de difusión.
 
-Una foto y una respuesta por navegador. Anular **no habilita otro envío** y no afecta al otro tipo de aporte. Sin login, nombres, galería, analítica ni IA externa. Borrar cookies, cambiar de navegador o usar incógnito permite otra identidad; no es una verificación por persona.
+Una foto y una respuesta **activas** por navegador. Al anular una contribución puedes enviar otra del mismo tipo; el otro aporte no se altera. Sin login, nombres, galería, analítica ni IA externa. Borrar cookies, cambiar de navegador o usar incógnito permite otra identidad; no es una verificación por persona.
 
 ## Actualización desde tu instalación existente
 

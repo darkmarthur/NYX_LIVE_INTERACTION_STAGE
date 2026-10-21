@@ -10,7 +10,8 @@ const ERRORS = {
   CLOSED: [410, 'La ventana de participación está cerrada.'],
   BUSY: [429, 'Hay varios envíos al mismo tiempo. Espera unos segundos y vuelve a intentar.'],
   FULL: [409, 'Se alcanzó el límite de aportaciones de esta pieza.'],
-  WITHDRAWN: [409, 'Esta participación ya fue retirada.'],
+  WITHDRAWN: [409, 'Actualiza el receptor de Google para permitir enviar después de anular.'],
+  STALE: [409, 'Tu aportación cambió en otra pestaña. Recarga para ver su estado actual.'],
   CONSENT: [400, 'Necesitamos tu aceptación de los términos antes de recibir el contenido.'],
   INVALID_TEXT: [400, 'Escribe entre 3 y 500 caracteres, sin información confidencial.'],
   INVALID_IMAGE: [400, 'No pudimos validar la foto. Selecciona otra imagen JPEG, PNG o WebP.'],
@@ -30,6 +31,11 @@ function equal(a, b) {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 function fail(code) { throw new Error(code); }
+function receiptOrNull(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !/^NYX-[a-f0-9]{32}$/.test(value)) fail('BAD_REQUEST');
+  return value;
+}
 function json(value, status = 200, cookie) {
   const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, private', 'X-Content-Type-Options': 'nosniff', Vary: 'Cookie' };
   if (cookie) headers['Set-Cookie'] = cookie;
@@ -117,7 +123,7 @@ export function createApp({ env = process.env, backend = googleBridge, now = Dat
       // URL opt-in is intentionally a public feature gate, NOT authentication.
       const enabledInUrl = url.searchParams.getAll('enable').length === 1 && url.searchParams.get('enable') === 'true';
       const phase = enabledInUrl ? phaseAt(s, time) : 'paused';
-      const config = { ...s, phase, mode: demo ? 'demo' : s.ready ? 'live' : 'setup', uiVersion: 4 };
+      const config = { ...s, phase, mode: demo ? 'demo' : s.ready ? 'live' : 'setup', uiVersion: 5 };
       if (route === '/api/config') return json({ ok: true, data: config });
       if (route === '/api/bootstrap' && (!s.ready || time >= Date.parse(s.purgeAt))) return json({ ok: true, data: { config, session: null } });
       if (!s.ready) fail('SETUP');
@@ -149,19 +155,21 @@ export function createApp({ env = process.env, backend = googleBridge, now = Dat
         if (body.confirm !== true) fail('BAD_REQUEST');
         if (body.kind !== undefined && !['photo', 'text'].includes(body.kind)) fail('BAD_REQUEST');
         // No file ID, filename, UUID or actor from the browser is trusted.
+        const receipt = receiptOrNull(body.receipt);
         const operation = body.kind ? 'withdrawOne' : 'withdraw'; // old clients only
-        const result = await backend(operation, { ...common, ...(body.kind ? { kind: body.kind } : {}) }, env);
+        const result = await backend(operation, { ...common, ...(body.kind ? { kind: body.kind } : {}), ...(receipt ? { receipt } : {}) }, env);
         if (body.kind && (result?.kind !== body.kind || result?.withdrawn !== true)) fail('BACKEND');
         return json({ ok: true, data: { withdrawn: true, ...(body.kind ? { kind: body.kind } : {}) } });
       }
       if (phase !== 'open') fail('CLOSED');
       // Require BOTH ?enable=true and a second explicit request flag for uploads.
       const binary = route === '/api/photo' && request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'image/jpeg';
-      let submission;
+      let submission, replacesReceipt = null;
       if (binary) {
         if (request.headers.get('x-nyx-enable-interaction') !== 'true') fail('CLOSED');
         if (request.headers.get('x-nyx-consent') !== 'true' || request.headers.get('x-nyx-terms') !== s.termsVersion) fail('CONSENT');
         if (request.headers.get('x-nyx-website')) fail('BAD_REQUEST');
+        replacesReceipt = receiptOrNull(request.headers.get('x-nyx-replaces'));
         const image = (await limitedBytes(request, s.maxPhotoBytes)).toString('base64');
         validateJpeg(image, s.maxPhotoBytes, s.maxPhotoSide);
         submission = { kind: 'photo', image };
@@ -170,6 +178,7 @@ export function createApp({ env = process.env, backend = googleBridge, now = Dat
         if (body.enable_interaction !== true) fail('CLOSED');
         if (body.consent !== true || body.termsVersion !== s.termsVersion) fail('CONSENT');
         if (body.website) fail('BAD_REQUEST');
+        replacesReceipt = receiptOrNull(body.replacesReceipt);
         if (route === '/api/answer') {
           if (typeof body.answer !== 'string') fail('INVALID_TEXT');
           const answer = body.answer.trim().normalize('NFC');
@@ -180,7 +189,7 @@ export function createApp({ env = process.env, backend = googleBridge, now = Dat
           submission = { kind: 'photo', image: body.image }; // backward compatible
         }
       }
-      const result = await backend('submit', { ...common, ...submission, consent: true, enableInteraction: true }, env);
+      const result = await backend('submit', { ...common, ...submission, consent: true, enableInteraction: true, replacesReceipt }, env);
       return json({ ok: true, data: { receipt: result.receipt, duplicate: result.duplicate === true } });
     } catch (error) {
       const code = Object.hasOwn(ERRORS, error.message) ? error.message : 'BACKEND';
