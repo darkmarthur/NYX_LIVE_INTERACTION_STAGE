@@ -6,6 +6,7 @@ import { Script } from 'node:vm';
 import assert from 'node:assert/strict';
 import { QUESTIONS } from '../shared/questions.mjs';
 import { PAGES } from './pages.mjs';
+import { CALENDAR_FILE, calendarFile, eventHTML, eventClientScript, EVENT_CSS } from './event.mjs';
 assert.equal(QUESTIONS.length,100); assert.equal(new Set(QUESTIONS).size,100);
 for (const dir of ['public','server','shared','scripts','netlify/functions']) {
   for (const name of await readdir(dir)) {
@@ -18,15 +19,20 @@ new Script(await readFile('apps-script/Code.gs','utf8'));
 JSON.parse(await readFile('apps-script/appsscript.json','utf8'));
 const names = (await readdir('public')).filter(n => /\.(js|css)$/.test(n)).sort();
 const contents = Object.fromEntries(await Promise.all(names.map(async n => [n,await readFile(`public/${n}`,'utf8')])));
+// Compile the small event widget into existing assets: no new initial requests.
+contents['app.js'] += eventClientScript();
+contents['styles.css'] += EVENT_CSS;
 const version = createHash('sha256').update(names.map(n => n+'\0'+contents[n]).join('\0')).digest('hex').slice(0,12);
 await rm('dist',{recursive:true,force:true});
 await mkdir(`dist/assets/${version}`,{recursive:true});
 for (const name of names) await writeFile(`dist/assets/${version}/${name}`,contents[name]);
 const template = await readFile('public/index.html','utf8');
+assert.ok(template.includes('<!--EVENT-->'), 'Falta la información del evento');
 for (const [page,info] of Object.entries(PAGES)) {
-  const html = template.replace('<!--TITLE-->',info.title).replace('<!--PAGE-->',page).replace('<!--CONTENT-->',info.content).replace('href="/styles.css"',`href="/assets/${version}/styles.css"`).replace('src="/app.js"',`src="/assets/${version}/app.js"`);
+  const html = template.replace('<!--TITLE-->',info.title).replace('<!--PAGE-->',page).replace('<!--EVENT-->',eventHTML()).replace('<!--CONTENT-->',info.content).replace('href="/styles.css"',`href="/assets/${version}/styles.css"`).replace('src="/app.js"',`src="/assets/${version}/app.js"`);
   await writeFile(`dist/${info.path}`,html);
 }
+await writeFile(`dist/${CALENDAR_FILE}`, calendarFile(), 'utf8');
 // CI budget measures compressed BODY bytes, not response headers/TLS or API traffic.
 const report = {};
 for (const [name,info] of Object.entries(PAGES)) {
