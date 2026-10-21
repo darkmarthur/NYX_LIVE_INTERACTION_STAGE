@@ -42,3 +42,10 @@
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+# Do not force a download: allow Safari/installed calendar apps to handle ICS.
+[[headers]]
+  for = "/nyx-sonoro-22-octubre-2026.ics"
+  [headers.values]
+    Content-Type = "text/calendar; charset=utf-8"
+    Content-Disposition = 'inline; filename="nyx-sonoro-22-octubre-2026.ics"'

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { QUESTIONS } from '../shared/questions.mjs';
 import { PAGES } from './pages.mjs';
 import { CALENDAR_FILE, calendarFile, eventHTML, eventClientScript, EVENT_CSS } from './event.mjs';
+import { ambientClientScript, AMBIENT_CSS } from './ambient.mjs';
 assert.equal(QUESTIONS.length,100); assert.equal(new Set(QUESTIONS).size,100);
 for (const dir of ['public','server','shared','scripts','netlify/functions']) {
   for (const name of await readdir(dir)) {
@@ -19,9 +20,11 @@ new Script(await readFile('apps-script/Code.gs','utf8'));
 JSON.parse(await readFile('apps-script/appsscript.json','utf8'));
 const names = (await readdir('public')).filter(n => /\.(js|css)$/.test(n)).sort();
 const contents = Object.fromEntries(await Promise.all(names.map(async n => [n,await readFile(`public/${n}`,'utf8')])));
-// Compile the small event widget into existing assets: no new initial requests.
-contents['app.js'] += eventClientScript();
-contents['styles.css'] += EVENT_CSS;
+// Keep the effect outside the critical boot path and out of initial imports.
+assert.ok(/\nboot\(\);\s*$/.test(contents['app.js']), 'Revisar el inicio de la interfaz antes de integrar el fondo');
+contents['app.js'] = contents['app.js'].replace(/\nboot\(\);\s*$/, '\nconst nyxBootReady = boot();\n');
+contents['app.js'] += eventClientScript() + ambientClientScript();
+contents['styles.css'] += EVENT_CSS + AMBIENT_CSS;
 const version = createHash('sha256').update(names.map(n => n+'\0'+contents[n]).join('\0')).digest('hex').slice(0,12);
 await rm('dist',{recursive:true,force:true});
 await mkdir(`dist/assets/${version}`,{recursive:true});

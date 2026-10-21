@@ -44,7 +44,7 @@ export function googleCalendarURL(event = EVENT) {
 export function eventHTML(event = EVENT) {
   return `<aside class="event-card" aria-label="Información del concierto">
 <div class="event-copy"><strong>NYX SONORO <span id="event-relative" class="event-relative" hidden></span></strong><span>Teatro Ocampo · Cuernavaca</span><time datetime="${escapeHTML(event.startsAt)}">22 de octubre de 2026 · 19:00 h</time></div>
-<details class="event-calendar" id="event-calendar"><summary>AÑADIR AL<br>CALENDARIO <span aria-hidden="true">＋</span></summary><div class="calendar-options"><a href="${escapeHTML(googleCalendarURL(event))}" target="_blank" rel="noopener noreferrer">Google Calendar ↗</a><a href="/${CALENDAR_FILE}" download="${CALENDAR_FILE}">Apple / Outlook (.ics)</a><small>Confirma para guardarlo.</small></div></details>
+<details class="event-calendar" id="event-calendar"><summary>AÑADIR AL<br>CALENDARIO <span aria-hidden="true">＋</span></summary><div class="calendar-options"><a href="${escapeHTML(googleCalendarURL(event))}" target="_blank" rel="noopener noreferrer">Google Calendar ↗</a><a href="/${CALENDAR_FILE}" type="text/calendar" target="_blank" rel="noopener noreferrer">Apple / Outlook (.ics)</a><small>Confirma para guardarlo. En Android, usa Google Calendar. Si no abre, prueba Safari o Chrome.</small></div></details>
 </aside>`;
 }
 // The same pure function is tested on the server and embedded in the browser.
