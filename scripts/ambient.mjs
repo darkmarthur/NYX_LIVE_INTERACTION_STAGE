@@ -6,7 +6,7 @@ export function ambientClientScript() {
   let attempted = false, timer = 0, idle = 0, observer;
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-  const isBusy = () => busy || uncertain || document.documentElement.classList.contains('nyx-sending') || document.querySelector('#confirm-unsend')?.disabled === true || document.querySelector('#check-status')?.disabled === true || document.querySelector('#photo-frame')?.dataset.processing === 'true' || document.documentElement.classList.contains('legal-open');
+  const isBusy = () => busy || uncertain || document.documentElement.classList.contains('nyx-sending') || document.querySelector('#confirm-unsend')?.disabled === true || document.querySelector('#check-status')?.disabled === true || document.querySelector('#photo-frame')?.dataset.processing === 'true' || (document.documentElement.classList.contains('legal-open') || document.documentElement.classList.contains('nyx-feedback-open'));
   const isEditing = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   const allowed = () => !motion.matches && navigator.onLine !== false && !connection?.saveData && !/^(slow-)?2g$/.test(connection?.effectiveType || '');
   function clearSchedule() {

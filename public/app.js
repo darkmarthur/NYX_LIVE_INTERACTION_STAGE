@@ -79,9 +79,16 @@ async function api(path, body, extra = {}) {
     const endpoint = path + (enableInteraction ? '?enable=true' : '');
     const response = await fetch(endpoint, { method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store', headers, body:body instanceof Blob ? body : body ? JSON.stringify(body) : undefined, signal:controller.signal });
     const result = await response.json();
-    if (result.ok === true) return result.data;
-    const error = new Error(result.error?.message || 'No pudimos confirmar la operación.');
-    error.code = result.error?.code;
+    if (response.ok && result?.ok === true) {
+      const isSubmission = path === '/api/photo' || path === '/api/answer';
+      if (isSubmission && !/^NYX-[a-f0-9]{32}$/.test(result.data?.receipt || '')) {
+        const invalid = new Error('El servidor no devolvió un comprobante válido. Comprueba el estado antes de reintentar.');
+        invalid.code = 'INVALID_RECEIPT'; invalid.uncertain = true; throw invalid;
+      }
+      return result.data;
+    }
+    const error = new Error(result?.error?.message || 'No pudimos confirmar la operación.');
+    error.code = result?.error?.code || `HTTP_${response.status}`;
     error.uncertain = response.status >= 500 || response.status === 429;
     throw error;
   } catch (error) {
@@ -96,6 +103,59 @@ function message(text = '', error = false, selector = '#status') {
   const el = $(selector); if (!el) return;
   el.textContent = text; el.classList.toggle('error',error);
 }
+// Errors stay on screen until acknowledged. Never rely on a below-the-fold paragraph.
+let feedbackOverlay, feedbackFocus;
+function closeFeedback() {
+  if (!feedbackOverlay || feedbackOverlay.hidden) return;
+  feedbackOverlay.hidden = true;
+  $('.shell')?.removeAttribute('inert');
+  document.documentElement.classList.remove('nyx-feedback-open');
+  if (feedbackFocus?.isConnected && !feedbackFocus.disabled) feedbackFocus.focus({preventScroll:true});
+}
+function showFailure(error, canCheck = false) {
+  showTransfer(false);
+  if (!feedbackOverlay) {
+    feedbackOverlay = document.createElement('div');
+    feedbackOverlay.id = 'nyx-feedback'; feedbackOverlay.className = 'nyx-feedback';
+    feedbackOverlay.hidden = true; feedbackOverlay.tabIndex = -1;
+    feedbackOverlay.setAttribute('role','alertdialog');
+    feedbackOverlay.setAttribute('aria-modal','true');
+    feedbackOverlay.setAttribute('aria-labelledby','nyx-feedback-title');
+    feedbackOverlay.setAttribute('aria-describedby','nyx-feedback-message');
+    document.body.append(feedbackOverlay);
+    feedbackOverlay.addEventListener('keydown',event => {
+      if (event.key === 'Escape') { event.preventDefault(); closeFeedback(); }
+      if (event.key === 'Tab') {
+        const buttons = [...feedbackOverlay.querySelectorAll('button:not(:disabled)')];
+        const first = buttons[0], last = buttons[buttons.length-1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === feedbackOverlay)) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === feedbackOverlay)) { event.preventDefault(); first?.focus(); }
+      }
+    });
+  }
+  const code = typeof error.code === 'string' ? error.code : 'SIN_CONFIRMACION';
+  const mayHaveSaved = error.uncertain === true;
+  const title = mayHaveSaved ? 'NO HAY CONFIRMACIÓN' : 'NO SE COMPLETÓ EL ENVÍO';
+  const text = error.message || 'No pudimos confirmar la operación. Conserva esta página y vuelve a comprobar.';
+  feedbackFocus = document.activeElement;
+  feedbackOverlay.innerHTML = `<section class="nyx-feedback-content"><span class="eyebrow">NYX / ESTADO DEL ENVÍO</span><h2 id="nyx-feedback-title" tabindex="-1">${title}</h2><p id="nyx-feedback-message">${esc(text)}</p><p class="micro">${canCheck ? 'Tu selección sigue aquí. Comprobar no vuelve a enviar el contenido.' : 'Puedes volver a la página sin perder lo que seleccionaste.'}</p><code class="feedback-code">Referencia: ${esc(code)}</code><div class="actions">${canCheck ? '<button type="button" class="secondary" id="feedback-check">COMPROBAR ESTADO</button>' : ''}<button type="button" class="secondary" id="feedback-close">VOLVER AL FORMULARIO</button></div></section>`;
+  feedbackOverlay.hidden = false;
+  // Move focus before making the previous form inert.
+  $('#nyx-feedback-title').focus({preventScroll:true});
+  $('.shell')?.setAttribute('inert','');
+  document.documentElement.classList.add('nyx-feedback-open');
+  $('#feedback-close').addEventListener('click',closeFeedback);
+  $('#feedback-check')?.addEventListener('click',() => {
+    closeFeedback(); uncertain = true; controls(); $('#send')?.click();
+  });
+}
+function presentFailure(error, selector = '#status', submission = false) {
+  if (submission && error.code === 'STALE') uncertain = true;
+  message(error.message || 'No pudimos confirmar el envío.',true,selector);
+  controls();
+  showFailure(error,submission && (uncertain || error.code === 'STALE'));
+}
+
 function releasePhoto() {
   if (prepared) URL.revokeObjectURL(prepared.previewUrl);
   prepared = null;
@@ -116,6 +176,7 @@ function controls() {
   $('#consent').disabled = busy || uncertain;
   if ($('#answer')) $('#answer').disabled = busy || uncertain;
   if ($('#photo-file')) $('#photo-file').disabled = busy || uncertain || processing;
+  if ($('#picker')) $('#picker').disabled = busy || uncertain || processing;
   if ($('#change-photo')) $('#change-photo').disabled = busy || uncertain || processing;
   button.disabled = busy || processing || (!uncertain && (!$('#consent').checked || (page === 'photo' ? !prepared : $('#answer').value.trim().length < 3)));
   button.innerHTML = busy ? 'ESPERA…' : uncertain ? 'COMPROBAR ENVÍO' : 'ENVIAR <span aria-hidden="true">↗</span>';
@@ -147,7 +208,7 @@ function receiptView(entry) {
       busy = false; showTransfer(false);
       if (current && !current.pending) receiptView(current);
       else message('Sigue pendiente. Puedes comprobar más tarde o anular.',false,'#receipt-status');
-    } catch (error) { message(error.message,true,'#receipt-status'); }
+    } catch (error) { showTransfer(false); message(error.message,true,'#receipt-status'); showFailure(error); }
     finally { busy = false; showTransfer(false); if ($('#check-status')) $('#check-status').disabled = false; }
   });
   $('#unsend')?.addEventListener('click',() => {
@@ -163,7 +224,9 @@ function receiptView(entry) {
         session[kind] = {...entry,withdrawn:true,pending:false};
         busy = false; showTransfer(false); receiptView(session[kind]);
       } catch (error) {
+        showTransfer(false);
         message(error.code === 'UPDATE_REQUIRED' || error.code === 'STALE' ? error.message : error.uncertain ? 'No pudimos confirmar la anulación. Reintentar es seguro.' : error.message,true,'#receipt-status');
+        showFailure(error);
       } finally {
         busy = false; showTransfer(false);
         if ($('#confirm-unsend')) $('#confirm-unsend').disabled = false;
@@ -208,7 +271,16 @@ async function bindForm() {
     $('#answer').addEventListener('input',() => { $('#counter').textContent = `${$('#answer').value.length} / 500`; controls(); });
   } else {
     const picker = $('#photo-file');
-    $('#change-photo').addEventListener('click',() => picker.click());
+    // Synchronous inside the user's gesture: required by mobile file pickers.
+    const choosePhoto = () => {
+      if (busy || uncertain || picker.disabled) return;
+      picker.click();
+    };
+    $('#picker').addEventListener('click',choosePhoto);
+    $('#change-photo').addEventListener('click',choosePhoto);
+    $('#photo-frame').addEventListener('click',event => {
+      if (event.target === event.currentTarget && !$('#picker').hidden) choosePhoto();
+    });
     picker.addEventListener('change',async () => {
       const file = picker.files?.[0]; if (!file || busy || uncertain) return;
       const generation = ++photoGeneration;
@@ -232,13 +304,20 @@ async function bindForm() {
     if (busy || $('#send').disabled) return;
     if (!uncertain && !event.currentTarget.reportValidity()) return;
     busy = true; controls(); showTransfer(true,uncertain ? 'COMPROBANDO…' : 'ENVIANDO…');
+    let failure = null;
     if (uncertain) {
       try {
         const previous = await refreshSession();
-        if (previous) { busy = false; showTransfer(false); receiptView(previous); return; }
-        uncertain = false; message('No consta recibido todavía. Pulsa ENVIAR para reintentar el mismo aporte.');
-      } catch (error) { message(error.message,true); }
-      finally { busy = false; controls(); showTransfer(false); }
+        busy = false; showTransfer(false);
+        if (previous && !previous.withdrawn) { receiptView(previous); return; }
+        // refreshSession updates the cancelled receipt, including changes from another tab.
+        // Keep the selected file/text; only the explicit next click can submit it.
+        uncertain = false;
+        message(previous?.withdrawn ? 'El envío anterior está anulado. Pulsa ENVIAR para compartir lo que elegiste.' : 'No consta un envío recibido. Pulsa ENVIAR para reintentar con tu selección.');
+      } catch (error) { failure = error; }
+      finally { busy = false; showTransfer(false); controls(); }
+      if (failure) presentFailure(failure,'#status',true);
+      else { $('#status')?.setAttribute('tabindex','-1'); $('#status')?.focus(); }
       return;
     }
     try {
@@ -249,9 +328,10 @@ async function bindForm() {
       session[kind] = result;
       busy = false; showTransfer(false); receiptView(result);
     } catch (error) {
-      uncertain = error.uncertain === true;
-      message(uncertain ? 'No hay confirmación. Comprueba antes de volver a enviar.' : error.message,true);
-    } finally { busy = false; controls(); showTransfer(false); }
+      uncertain = error.uncertain === true || error.code === 'STALE';
+      failure = error;
+    } finally { busy = false; showTransfer(false); controls(); }
+    if (failure) presentFailure(failure,'#status',true);
   });
   controls();
 }

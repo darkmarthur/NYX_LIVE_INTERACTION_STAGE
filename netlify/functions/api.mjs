@@ -1,3 +1,4 @@
 import { createApp } from '../../server/app.mjs';
-export default createApp();
+import { withErrorDiagnostics } from '../../server/diagnostics.mjs';
+export default withErrorDiagnostics(createApp());
 export const config = { path: '/api/*' };
