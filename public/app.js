@@ -1,90 +1,35 @@
 const $ = selector => document.querySelector(selector);
-const main = $('#main');
-const page = document.body.dataset.page;
+const main = $('#main'), page = document.body.dataset.page;
 const kind = page === 'photo' ? 'photo' : 'text';
-const urlParams = new URLSearchParams(location.search);
-const enableInteraction = urlParams.getAll('enable').length === 1 && urlParams.get('enable') === 'true';
-const instagramUrl = 'https://www.instagram.com/nyx.sonoro?obrf=MW0xaXA2OHoweHkwMw==';
-const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-const initialFormHTML = $('#piece')?.innerHTML || '';
-let config, session, prepared, busy = false, uncertain = false, photoGeneration = 0;
+const params = new URLSearchParams(location.search);
+const enabled = params.getAll('enable').length === 1 && params.get('enable') === 'true';
+const instagram = 'https://www.instagram.com/nyx.sonoro?obrf=MW0xaXA2OHoweHkwMw==';
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const formHTML = $('#piece')?.innerHTML || '';
+const storageKey = `nyx:v6:draft:${kind}`;
+let config, session, prepared, busy = false, uncertain = false, attempted = false, generation = 0, draftId;
+const uuid = () => [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2,'0')).join('');
+try { draftId = sessionStorage.getItem(storageKey); } catch {}
+if (!/^[a-f0-9]{32}$/.test(draftId || '')) draftId = uuid();
+function remember() { try { sessionStorage.setItem(storageKey, draftId); } catch {} }
+remember(); // ONLY a random id, never the photo or answer.
 
-// Only active requests lock the page. This cannot block OS-level tab/app closure.
-let transferOverlay, previousFocus, transferTimer;
-function guardExit(event) { event.preventDefault(); event.returnValue = ''; }
-function guardInteraction(event) {
-  if (transferOverlay?.hidden !== false) return;
-  if (event.type === 'keydown' && !['Tab','Escape','Enter',' '].includes(event.key)) return;
-  if (event.type === 'keydown' || !transferOverlay.contains(event.target)) {
-    event.preventDefault(); event.stopImmediatePropagation();
-    transferOverlay.focus({ preventScroll:true });
-  }
-}
-function guardFocus(event) {
-  if (transferOverlay?.hidden === false && !transferOverlay.contains(event.target)) transferOverlay.focus({ preventScroll:true });
-}
-function showTransfer(active, title = 'ENVIANDO…') {
-  if (!active) {
-    if (!transferOverlay || transferOverlay.hidden) return;
-    clearTimeout(transferTimer);
-    transferOverlay.hidden = true;
-    $('.shell')?.removeAttribute('inert');
-    main.removeAttribute('aria-busy');
-    document.documentElement.classList.remove('nyx-sending');
-    window.removeEventListener('beforeunload', guardExit);
-    ['click','pointerdown','keydown'].forEach(type => document.removeEventListener(type,guardInteraction,true));
-    document.removeEventListener('focusin',guardFocus,true);
-    if (previousFocus?.isConnected && !previousFocus.disabled) previousFocus.focus({preventScroll:true});
-    return;
-  }
-  if (!transferOverlay) {
-    transferOverlay = document.createElement('div');
-    transferOverlay.id = 'nyx-transfer';
-    transferOverlay.className = 'nyx-transfer';
-    transferOverlay.hidden = true;
-    transferOverlay.tabIndex = -1;
-    transferOverlay.setAttribute('role','alertdialog');
-    transferOverlay.setAttribute('aria-modal','true');
-    transferOverlay.setAttribute('aria-labelledby','nyx-transfer-title');
-    transferOverlay.setAttribute('aria-describedby','nyx-transfer-hint');
-    // Particle positions are in the stylesheet; no CSP-blocked inline styles.
-    const particles = '<i></i>'.repeat(24);
-    transferOverlay.innerHTML = `<div class="nyx-transfer-content"><div class="nyx-transfer-particles" aria-hidden="true">${particles}</div><strong id="nyx-transfer-title"></strong><p id="nyx-transfer-hint">No cierres esta página.<br>Estamos esperando la confirmación.</p><p id="nyx-transfer-wait" role="status" aria-live="polite"></p></div>`;
-    document.body.append(transferOverlay);
-  }
-  previousFocus = document.activeElement;
-  $('#nyx-transfer-title').textContent = title;
-  $('#nyx-transfer-wait').textContent = '';
-  transferOverlay.hidden = false;
-  transferOverlay.focus({preventScroll:true});
-  $('.shell')?.setAttribute('inert','');
-  main.setAttribute('aria-busy','true');
-  document.documentElement.classList.add('nyx-sending');
-  window.addEventListener('beforeunload',guardExit);
-  ['click','pointerdown','keydown'].forEach(type => document.addEventListener(type,guardInteraction,true));
-  document.addEventListener('focusin',guardFocus,true);
-  clearTimeout(transferTimer);
-  transferTimer = setTimeout(() => {
-    if (!transferOverlay.hidden) $('#nyx-transfer-wait').textContent = 'Sigue en proceso. No hace falta volver a pulsar enviar.';
-  }, 12000);
-}
-
-// No polling or automatic re-upload. A timeout is NOT proof Google rejected a write.
-async function api(path, body, extra = {}) {
+async function api(path, body, extra = {}, query = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), body instanceof Blob ? 120000 : 45000);
-  const headers = body ? { 'X-Nyx-Csrf':session?.csrf || '', ...extra } : {};
+  const timer = setTimeout(() => controller.abort(), body instanceof Blob ? 120000 : 45000);
+  const target = new URL(path, location.origin);
+  if (enabled) target.searchParams.set('enable','true');
+  target.searchParams.set('kind',kind);
+  if (!body) target.searchParams.set('requestId',draftId);
+  for (const [key, value] of Object.entries(query)) if (value) target.searchParams.set(key,value);
+  const headers = body ? {'X-Nyx-Csrf':session?.csrf || '',...extra} : {};
   if (body && !(body instanceof Blob)) headers['Content-Type'] = 'application/json';
   try {
-    const endpoint = path + (enableInteraction ? '?enable=true' : '');
-    const response = await fetch(endpoint, { method:body ? 'POST' : 'GET', credentials:'same-origin', cache:'no-store', headers, body:body instanceof Blob ? body : body ? JSON.stringify(body) : undefined, signal:controller.signal });
+    const response = await fetch(target.pathname + target.search, {method:body ? 'POST' : 'GET',credentials:'same-origin',cache:'no-store',headers,
+      body:body instanceof Blob ? body : body ? JSON.stringify(body) : undefined,signal:controller.signal});
     const result = await response.json();
     if (response.ok && result?.ok === true) {
-      const isSubmission = path === '/api/photo' || path === '/api/answer';
-      if (isSubmission && !/^NYX-[a-f0-9]{32}$/.test(result.data?.receipt || '')) {
-        const invalid = new Error('El servidor no devolvió un comprobante válido. Comprueba el estado antes de reintentar.');
-        invalid.code = 'INVALID_RECEIPT'; invalid.uncertain = true; throw invalid;
-      }
+      if (['/api/photo','/api/answer'].includes(path) && !/^NYX-[a-f0-9]{32}$/.test(result.data?.receipt || '')) throw new Error('Comprobante inválido. Comprueba el estado.');
       return result.data;
     }
     const error = new Error(result?.error?.message || 'No pudimos confirmar la operación.');
@@ -92,268 +37,212 @@ async function api(path, body, extra = {}) {
     error.uncertain = response.status >= 500 || response.status === 429;
     throw error;
   } catch (error) {
-    if (error.uncertain === undefined) {
-      error.uncertain = true;
-      error.message = 'No hay confirmación. Conserva esta página y comprueba el envío.';
-    }
+    if (error.uncertain === undefined) {error.uncertain = true; error.message = 'No hay confirmación. Conserva esta página y comprueba el envío.';}
     throw error;
-  } finally { clearTimeout(timeout); }
+  } finally { clearTimeout(timer); }
 }
 function message(text = '', error = false, selector = '#status') {
-  const el = $(selector); if (!el) return;
-  el.textContent = text; el.classList.toggle('error',error);
+  const element = $(selector); if (element) {element.textContent = text; element.classList.toggle('error',error);}
 }
-// Errors stay on screen until acknowledged. Never rely on a below-the-fold paragraph.
-let feedbackOverlay, feedbackFocus;
-function closeFeedback() {
-  if (!feedbackOverlay || feedbackOverlay.hidden) return;
-  feedbackOverlay.hidden = true;
-  $('.shell')?.removeAttribute('inert');
-  document.documentElement.classList.remove('nyx-feedback-open');
-  if (feedbackFocus?.isConnected && !feedbackFocus.disabled) feedbackFocus.focus({preventScroll:true});
+function releasePhoto() { if (prepared) URL.revokeObjectURL(prepared.previewUrl); prepared = null; }
+function phase() {
+  $('#phase').textContent = config.mode === 'demo' ? 'DEMO LOCAL' : config.phase === 'open' ? 'RECIBIENDO' : config.phase === 'closed' ? 'CERRADO' : 'NO HABILITADO';
+  $('#phase').dataset.open = String(config.phase === 'open');
+}
+function notice(title, text) {
+  ($('#panel') || main).innerHTML = `<section class="notice"><h2>${esc(title)}</h2><p>${esc(text)}</p><button class="secondary" id="reload">REINTENTAR</button></section>`;
+  $('#reload').onclick = () => location.reload();
+}
+let transfer, oldFocus, sendingTimer;
+function guardExit(event) { event.preventDefault(); event.returnValue = ''; }
+function showTransfer(on, label = 'ENVIANDO…') {
+  if (!on) {
+    if (!transfer || transfer.hidden) return;
+    clearTimeout(sendingTimer); transfer.hidden = true;
+    $('.shell')?.removeAttribute('inert'); main.removeAttribute('aria-busy');
+    document.documentElement.classList.remove('nyx-sending'); window.removeEventListener('beforeunload',guardExit);
+    if (oldFocus?.isConnected && !oldFocus.disabled) oldFocus.focus({preventScroll:true}); return;
+  }
+  if (!transfer) {
+    transfer = document.createElement('div'); transfer.className = 'nyx-transfer'; transfer.id = 'nyx-transfer'; transfer.tabIndex = -1;
+    transfer.setAttribute('role','alertdialog'); transfer.setAttribute('aria-modal','true'); transfer.setAttribute('aria-labelledby','nyx-transfer-title');
+    transfer.innerHTML = `<div class="nyx-transfer-content"><div class="nyx-transfer-particles" aria-hidden="true">${'<i></i>'.repeat(24)}</div><strong id="nyx-transfer-title"></strong><p>No cierres esta página.<br>Esperamos confirmación.</p><p id="nyx-transfer-wait" role="status"></p></div>`;
+    transfer.addEventListener('keydown',event => { if (event.key === 'Tab' || event.key === 'Escape') {event.preventDefault();transfer.focus();} });
+    document.body.append(transfer);
+  }
+  oldFocus = document.activeElement; $('#nyx-transfer-title').textContent = label; $('#nyx-transfer-wait').textContent = '';
+  transfer.hidden = false; transfer.focus({preventScroll:true}); $('.shell')?.setAttribute('inert',''); main.setAttribute('aria-busy','true');
+  document.documentElement.classList.add('nyx-sending'); window.addEventListener('beforeunload',guardExit);
+  clearTimeout(sendingTimer); sendingTimer = setTimeout(() => { if (!transfer.hidden) $('#nyx-transfer-wait').textContent = 'Sigue en proceso. No vuelvas a enviar.'; },12000);
+}
+let overlay, returnFocus;
+function closeOverlay() {
+  if (busy) return;
+  if (overlay) overlay.remove(); overlay = null;
+  $('.shell')?.removeAttribute('inert'); document.documentElement.classList.remove('legal-open');
+  if (returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus({preventScroll:true});
+}
+function openOverlay(label, html) {
+  if (overlay) overlay.remove();
+  returnFocus = document.activeElement;
+  overlay = document.createElement('div'); overlay.className = 'legal-overlay'; overlay.id = 'multi-overlay';
+  overlay.setAttribute('role','dialog'); overlay.setAttribute('aria-modal','true'); overlay.setAttribute('aria-label',label);
+  overlay.innerHTML = `<section class="legal-dialog"><button class="legal-close" id="multi-close" type="button">CERRAR ×</button><div id="multi-content" class="legal">${html}</div></section>`;
+  document.body.append(overlay); $('#multi-close').onclick = closeOverlay;
+  overlay.addEventListener('keydown',event => {
+    if (event.key === 'Escape') {event.preventDefault();closeOverlay();}
+    if (event.key === 'Tab') {
+      const all = [...overlay.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled)')], first=all[0], last=all.at(-1);
+      if (event.shiftKey && document.activeElement === first) {event.preventDefault();last?.focus();}
+      else if (!event.shiftKey && document.activeElement === last) {event.preventDefault();first?.focus();}
+    }
+  });
+  $('#multi-close').focus(); $('.shell')?.setAttribute('inert',''); document.documentElement.classList.add('legal-open');
 }
 function showFailure(error, canCheck = false) {
   showTransfer(false);
-  if (!feedbackOverlay) {
-    feedbackOverlay = document.createElement('div');
-    feedbackOverlay.id = 'nyx-feedback'; feedbackOverlay.className = 'nyx-feedback';
-    feedbackOverlay.hidden = true; feedbackOverlay.tabIndex = -1;
-    feedbackOverlay.setAttribute('role','alertdialog');
-    feedbackOverlay.setAttribute('aria-modal','true');
-    feedbackOverlay.setAttribute('aria-labelledby','nyx-feedback-title');
-    feedbackOverlay.setAttribute('aria-describedby','nyx-feedback-message');
-    document.body.append(feedbackOverlay);
-    feedbackOverlay.addEventListener('keydown',event => {
-      if (event.key === 'Escape') { event.preventDefault(); closeFeedback(); }
-      if (event.key === 'Tab') {
-        const buttons = [...feedbackOverlay.querySelectorAll('button:not(:disabled)')];
-        const first = buttons[0], last = buttons[buttons.length-1];
-        if (event.shiftKey && (document.activeElement === first || document.activeElement === feedbackOverlay)) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === feedbackOverlay)) { event.preventDefault(); first?.focus(); }
-      }
-    });
-  }
-  const code = typeof error.code === 'string' ? error.code : 'SIN_CONFIRMACION';
-  const mayHaveSaved = error.uncertain === true;
-  const title = mayHaveSaved ? 'NO HAY CONFIRMACIÓN' : 'NO SE COMPLETÓ EL ENVÍO';
-  const text = error.message || 'No pudimos confirmar la operación. Conserva esta página y vuelve a comprobar.';
-  feedbackFocus = document.activeElement;
-  feedbackOverlay.innerHTML = `<section class="nyx-feedback-content"><span class="eyebrow">NYX / ESTADO DEL ENVÍO</span><h2 id="nyx-feedback-title" tabindex="-1">${title}</h2><p id="nyx-feedback-message">${esc(text)}</p><p class="micro">${canCheck ? 'Tu selección sigue aquí. Comprobar no vuelve a enviar el contenido.' : 'Puedes volver a la página sin perder lo que seleccionaste.'}</p><code class="feedback-code">Referencia: ${esc(code)}</code><div class="actions">${canCheck ? '<button type="button" class="secondary" id="feedback-check">COMPROBAR ESTADO</button>' : ''}<button type="button" class="secondary" id="feedback-close">VOLVER AL FORMULARIO</button></div></section>`;
-  feedbackOverlay.hidden = false;
-  // Move focus before making the previous form inert.
-  $('#nyx-feedback-title').focus({preventScroll:true});
-  $('.shell')?.setAttribute('inert','');
-  document.documentElement.classList.add('nyx-feedback-open');
-  $('#feedback-close').addEventListener('click',closeFeedback);
-  $('#feedback-check')?.addEventListener('click',() => {
-    closeFeedback(); uncertain = true; controls(); $('#send')?.click();
-  });
-}
-function presentFailure(error, selector = '#status', submission = false) {
-  if (submission && error.code === 'STALE') uncertain = true;
-  message(error.message || 'No pudimos confirmar el envío.',true,selector);
-  controls();
-  showFailure(error,submission && (uncertain || error.code === 'STALE'));
-}
-
-function releasePhoto() {
-  if (prepared) URL.revokeObjectURL(prepared.previewUrl);
-  prepared = null;
-}
-function updatePhase() {
-  const open = config.phase === 'open';
-  $('#phase').textContent = config.mode === 'demo' ? 'DEMO LOCAL' : open ? 'RECIBIENDO' : config.phase === 'closed' ? 'CERRADO' : 'EN PREPARACIÓN';
-  $('#phase').dataset.open = String(open);
-}
-function showNotice(title, text, retry = false) {
-  const panel = $('#panel') || main;
-  panel.innerHTML = `<section class="notice"><h2>${esc(title)}</h2><p>${esc(text)}</p>${retry ? '<button class="secondary" id="reconnect">REINTENTAR CONEXIÓN</button>' : ''}</section>`;
-  if (retry) $('#reconnect').addEventListener('click',() => location.reload());
+  openOverlay('Estado del envío',`<p class="eyebrow">NYX / ESTADO DEL ENVÍO</p><h2>${error.uncertain ? 'NO HAY CONFIRMACIÓN' : 'NO SE COMPLETÓ LA OPERACIÓN'}</h2><p>${esc(error.message)}</p><code>Referencia: ${esc(error.code || 'SIN_CONFIRMACION')}</code><p>Tu selección sigue en esta página.</p>${canCheck ? '<button class="secondary" id="error-check">COMPROBAR ENVÍO</button>' : ''}`);
+  $('#error-check')?.addEventListener('click',() => {closeOverlay();uncertain=true;controls();$('#send')?.click();});
 }
 function controls() {
-  const button = $('#send'); if (!button) return;
-  const processing = $('#photo-frame')?.dataset.processing === 'true';
-  $('#consent').disabled = busy || uncertain;
-  if ($('#answer')) $('#answer').disabled = busy || uncertain;
-  if ($('#photo-file')) $('#photo-file').disabled = busy || uncertain || processing;
-  if ($('#picker')) $('#picker').disabled = busy || uncertain || processing;
-  if ($('#change-photo')) $('#change-photo').disabled = busy || uncertain || processing;
-  button.disabled = busy || processing || (!uncertain && (!$('#consent').checked || (page === 'photo' ? !prepared : $('#answer').value.trim().length < 3)));
-  button.innerHTML = busy ? 'ESPERA…' : uncertain ? 'COMPROBAR ENVÍO' : 'ENVIAR <span aria-hidden="true">↗</span>';
+  const send = $('#send'); if (!send) return;
+  const processing = $('#photo-frame')?.dataset.processing === 'true', lock = busy || uncertain || attempted;
+  $('#consent').disabled = lock;
+  for (const selector of ['#answer','#photo-file','#picker','#change-photo']) if ($(selector)) $(selector).disabled = lock || processing;
+  send.disabled = busy || processing || (!uncertain && (!$('#consent').checked || (kind==='photo' ? !prepared : $('#answer').value.trim().length<3)));
+  send.innerHTML = busy ? 'ESPERA…' : uncertain ? 'COMPROBAR ENVÍO' : 'ENVIAR ↗';
 }
-async function refreshSession() { session = await api('/api/session'); return session[kind]; }
-async function restartContribution() {
-  if (!initialFormHTML || !enableInteraction || config?.phase !== 'open' || !session || busy) return;
-  photoGeneration++;
-  releasePhoto(); uncertain = false;
-  $('#piece').innerHTML = initialFormHTML;
-  await bindForm();
-  $('#piece h1')?.setAttribute('tabindex','-1');
-  $('#piece h1')?.focus({preventScroll:true});
+async function refresh() {session = await api('/api/session'); return session.current;}
+function addHistoryButton() {
+  if ($('#my-submissions') || !session?.total) return;
+  const b = document.createElement('button'); b.id = 'my-submissions'; b.type = 'button'; b.className = 'secondary';
+  b.textContent = 'MIS ENVÍOS'; b.onclick = () => history().catch(error => showFailure(error));
+  $('#piece').append(b);
+}
+async function newContribution() {
+  if (busy || !enabled || config?.phase !== 'open') return;
+  busy=true;showTransfer(true,'PREPARANDO…');
+  const oldId=draftId; draftId=uuid();
+  try {
+    const next=await api('/api/session'); session=next;remember();generation++;releasePhoto();uncertain=false;attempted=false;
+    $('#piece').innerHTML=formHTML;bindForm();
+    busy=false;showTransfer(false);controls();$('#piece h1')?.setAttribute('tabindex','-1');$('#piece h1')?.focus({preventScroll:true});
+  } catch(error) {draftId=oldId;busy=false;showTransfer(false);showFailure(error);}
+}
+async function withdraw(entry) {
+  const result = await api('/api/withdraw',{confirm:true,kind,receipt:entry.receipt});
+  if (result?.withdrawn!==true || result.receipt!==entry.receipt || result.kind!==kind) throw new Error('No se confirmó la anulación.');
+  return {...entry,withdrawn:true,pending:false,submitted:false};
 }
 function receiptView(entry) {
-  releasePhoto();
-  const cancelled = entry.withdrawn === true;
-  const pending = entry.pending === true;
-  const canResend = cancelled && enableInteraction && config?.phase === 'open';
-  const label = config.mode === 'demo' ? 'SIMULACIÓN / NO SE GUARDÓ EN GOOGLE' : pending ? 'RECEPCIÓN POR CONFIRMAR' : cancelled ? 'ENVÍO ANULADO' : 'ENVÍO RECIBIDO';
-  $('#piece').innerHTML = `<section class="receipt-panel ${cancelled ? 'cancelled' : ''}" aria-labelledby="result-title"><div class="eyebrow">${label}</div><div class="receipt-mark" aria-hidden="true">${cancelled ? '×' : pending ? '…' : '[✓]'}</div><h1 id="result-title" tabindex="-1">${cancelled ? 'TÚ DECIDES.' : pending ? 'COMPROBANDO.' : 'YA ERES<br><span>PARTE.</span>'}</h1><p>${cancelled ? canResend ? 'Tu aportación se retiró. Ya puedes enviar otra.' : 'Tu aportación se retiró. La recepción no está habilitada en este enlace.' : pending ? 'La recepción quedó pendiente. Comprueba su estado o anúlala; no subas otro archivo.' : config.mode === 'demo' ? 'Prueba local: no se utilizará en la obra.' : page === 'photo' ? 'Tu foto fue recibida para la obra.' : 'Tu respuesta fue recibida para la lectura.'}</p><code class="receipt-code">${esc(entry.receipt || '')}</code><div id="receipt-actions" class="actions">${pending ? '<button class="secondary" id="check-status">COMPROBAR ESTADO</button>' : ''}${!cancelled ? '<button class="danger" id="unsend">ANULAR ENVÍO ANTERIOR</button>' : ''}${canResend ? `<button class="secondary" id="restart-contribution">${kind === 'photo' ? 'ENVIAR OTRA FOTO' : 'ESCRIBIR OTRA IDEA'} ↗</button>` : ''}</div><a class="instagram-after" href="${instagramUrl}" target="_blank" rel="noopener noreferrer">SÍGUENOS EN INSTAGRAM · NYX SONORO ↗</a><p id="receipt-status" class="status" role="status" aria-live="polite"></p><p class="micro">${cancelled ? 'Las copias locales deben retirarse por el equipo.' : 'Un aporte activo por tipo. Puedes anularlo y enviar otro.'}</p></section>`;
+  if (!entry.pending) releasePhoto();
+  const cancelled=entry.withdrawn, pending=entry.pending;
+  const more=enabled && config?.phase==='open' && !pending;
+  $('#piece').innerHTML=`<section class="receipt-panel ${cancelled?'cancelled':''}"><span class="eyebrow">NYX / ${config.mode==='demo'?'SIMULACIÓN LOCAL':'TU APORTACIÓN'}</span><h1 id="result-title" tabindex="-1">${cancelled?'ENVÍO ANULADO.':pending?'POR CONFIRMAR.':'ENVÍO RECIBIDO.'}</h1><p>${cancelled?'Solo se retiró esta aportación.':pending?'Comprueba o anula este intento. No se duplicará.':'Puedes enviar más, sin borrar los anteriores.'}</p><code class="receipt-code">${esc(entry.receipt)}</code><div class="actions" id="receipt-actions">${pending?'<button class="secondary" id="check-status">COMPROBAR ESTADO</button>':''}${more?`<button class="primary" id="restart-contribution">${kind==='photo'?'ENVIAR OTRA FOTO':'ESCRIBIR OTRA IDEA'} ↗</button>`:''}${!cancelled?'<button class="danger" id="unsend">ANULAR ESTE ENVÍO</button>':''}<button class="secondary" id="my-submissions">MIS ENVÍOS</button></div><a class="instagram-after" href="${instagram}" target="_blank" rel="noopener noreferrer">SÍGUENOS EN INSTAGRAM · NYX SONORO ↗</a><p id="receipt-status" class="status" role="status"></p></section>`;
   $('#result-title').focus({preventScroll:true});
-  $('#restart-contribution')?.addEventListener('click',restartContribution);
-  $('#check-status')?.addEventListener('click',async () => {
-    if (busy) return;
-    busy = true; $('#check-status').disabled = true; showTransfer(true,'COMPROBANDO…');
-    try {
-      const current = await refreshSession();
-      busy = false; showTransfer(false);
-      if (current && !current.pending) receiptView(current);
-      else message('Sigue pendiente. Puedes comprobar más tarde o anular.',false,'#receipt-status');
-    } catch (error) { showTransfer(false); message(error.message,true,'#receipt-status'); showFailure(error); }
-    finally { busy = false; showTransfer(false); if ($('#check-status')) $('#check-status').disabled = false; }
+  $('#restart-contribution')?.addEventListener('click',newContribution);
+  $('#my-submissions').onclick=()=>history().catch(error=>showFailure(error));
+  $('#check-status')?.addEventListener('click',async()=>{
+    if(busy)return;busy=true;showTransfer(true,'COMPROBANDO…');
+    try{const current=await refresh();busy=false;showTransfer(false);if(current)receiptView(current);else message('No consta recibido. Vuelve al enlace para intentar de nuevo.',false,'#receipt-status');}
+    catch(error){busy=false;showTransfer(false);showFailure(error);}finally{busy=false;showTransfer(false);}
   });
-  $('#unsend')?.addEventListener('click',() => {
-    if (busy) return;
-    $('#receipt-actions').innerHTML = `<p>¿Anular ${kind === 'photo' ? 'esta foto' : 'esta respuesta'}? Podrás enviar otra.</p><div class="confirm-row"><button class="secondary" id="keep">CONSERVAR</button><button class="danger" id="confirm-unsend">SÍ, ANULAR</button></div>`;
-    $('#keep').addEventListener('click',() => receiptView(entry));
-    $('#confirm-unsend').addEventListener('click',async () => {
-      if (busy) return;
-      busy = true; $('#confirm-unsend').disabled = true; $('#keep').disabled = true;
-      showTransfer(true,'ANULANDO…');
-      try {
-        await api('/api/withdraw',{confirm:true,kind,receipt:entry.receipt});
-        session[kind] = {...entry,withdrawn:true,pending:false};
-        busy = false; showTransfer(false); receiptView(session[kind]);
-      } catch (error) {
-        showTransfer(false);
-        message(error.code === 'UPDATE_REQUIRED' || error.code === 'STALE' ? error.message : error.uncertain ? 'No pudimos confirmar la anulación. Reintentar es seguro.' : error.message,true,'#receipt-status');
-        showFailure(error);
-      } finally {
-        busy = false; showTransfer(false);
-        if ($('#confirm-unsend')) $('#confirm-unsend').disabled = false;
-        if ($('#keep')) $('#keep').disabled = false;
-      }
-    });
-  });
-}
-
-let legalOverlay = null;
-async function openLegalOverlay() {
-  if (busy) return;
-  if (legalOverlay) { legalOverlay.hidden = false; document.documentElement.classList.add('legal-open'); $('#legal-close').focus(); return; }
-  const {renderLegal} = await import('./legal.js');
-  const overlay = document.createElement('div');
-  overlay.id = 'legal-overlay'; overlay.className = 'legal-overlay';
-  overlay.setAttribute('role','dialog'); overlay.setAttribute('aria-modal','true'); overlay.setAttribute('aria-label','Términos y privacidad');
-  overlay.innerHTML = '<section class="legal-dialog"><button type="button" id="legal-close" class="legal-close" aria-label="Cerrar aviso legal">CERRAR ×</button><div class="legal legal-body" id="inline-legal-content"></div></section>';
-  document.body.append(overlay);
-  const close = () => { overlay.hidden = true; document.documentElement.classList.remove('legal-open'); $('#terms-open')?.focus(); };
-  $('#legal-close').addEventListener('click',close);
-  overlay.addEventListener('click',event => { if (event.target === overlay) close(); });
-  overlay.addEventListener('keydown',event => {
-    if (event.key === 'Escape') { event.preventDefault(); close(); }
-    if (event.key === 'Tab') {
-      const focusable = Array.from(overlay.querySelectorAll('button:not(:disabled),a[href]'));
-      if (!focusable.length) return;
-      const first = focusable[0],last = focusable[focusable.length-1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    }
-  });
-  renderLegal($('#inline-legal-content'),config,esc);
-  document.documentElement.classList.add('legal-open'); legalOverlay = overlay; $('#legal-close').focus();
-}
-
-async function bindForm() {
-  $('#fields').disabled = false;
-  if (page === 'text') {
-    $('#question').textContent = session.question.text;
-    $('#question-label').textContent = `TU PREGUNTA / ${String(session.question.id).padStart(3,'0')}`;
-    $('#answer').addEventListener('input',() => { $('#counter').textContent = `${$('#answer').value.length} / 500`; controls(); });
-  } else {
-    const picker = $('#photo-file');
-    // Synchronous inside the user's gesture: required by mobile file pickers.
-    const choosePhoto = () => {
-      if (busy || uncertain || picker.disabled) return;
-      picker.click();
+  $('#unsend')?.addEventListener('click',()=>{
+    if(busy)return;
+    $('#receipt-actions').innerHTML='<p>¿Anular únicamente este envío?</p><div class="confirm-row"><button class="secondary" id="keep">CONSERVAR</button><button class="danger" id="confirm-unsend">SÍ, ANULAR</button></div>';
+    $('#keep').onclick=()=>receiptView(entry);
+    $('#confirm-unsend').onclick=async()=>{
+      if(busy)return;busy=true;showTransfer(true,'ANULANDO…');
+      try{const removed=await withdraw(entry);busy=false;showTransfer(false);session.current=removed;receiptView(removed);}
+      catch(error){busy=false;showTransfer(false);showFailure(error);}finally{busy=false;showTransfer(false);}
     };
-    $('#picker').addEventListener('click',choosePhoto);
-    $('#change-photo').addEventListener('click',choosePhoto);
-    $('#photo-frame').addEventListener('click',event => {
-      if (event.target === event.currentTarget && !$('#picker').hidden) choosePhoto();
-    });
-    picker.addEventListener('change',async () => {
-      const file = picker.files?.[0]; if (!file || busy || uncertain) return;
-      const generation = ++photoGeneration;
-      releasePhoto(); $('#preview-box').hidden = true; $('#picker').hidden = false;
-      $('#photo-frame').dataset.processing = 'true'; controls(); message('Preparando una versión ligera…');
-      try {
-        const {preparePhoto} = await import('./photo.js');
-        const result = await preparePhoto(file,config);
-        if (generation !== photoGeneration) { URL.revokeObjectURL(result.previewUrl); return; }
-        prepared = result; $('#preview').src = prepared.previewUrl;
-        $('#photo-info').textContent = `${Math.ceil(prepared.blob.size / 1024)} KB · ${prepared.width} × ${prepared.height}`;
-        $('#preview-box').hidden = false; $('#picker').hidden = true; message();
-      } catch (error) { message(error.message,true); }
-      finally { picker.value = ''; $('#photo-frame').dataset.processing = 'false'; controls(); }
-    });
-  }
-  $('#terms-open').addEventListener('click',() => openLegalOverlay().catch(() => message('No se pudo abrir el aviso. Reintenta cuando tengas señal.',true)));
-  $('#consent').addEventListener('change',controls);
-  $('#contribution').addEventListener('submit',async event => {
-    event.preventDefault();
-    if (busy || $('#send').disabled) return;
-    if (!uncertain && !event.currentTarget.reportValidity()) return;
-    busy = true; controls(); showTransfer(true,uncertain ? 'COMPROBANDO…' : 'ENVIANDO…');
-    let failure = null;
-    if (uncertain) {
-      try {
-        const previous = await refreshSession();
-        busy = false; showTransfer(false);
-        if (previous && !previous.withdrawn) { receiptView(previous); return; }
-        // refreshSession updates the cancelled receipt, including changes from another tab.
-        // Keep the selected file/text; only the explicit next click can submit it.
-        uncertain = false;
-        message(previous?.withdrawn ? 'El envío anterior está anulado. Pulsa ENVIAR para compartir lo que elegiste.' : 'No consta un envío recibido. Pulsa ENVIAR para reintentar con tu selección.');
-      } catch (error) { failure = error; }
-      finally { busy = false; showTransfer(false); controls(); }
-      if (failure) presentFailure(failure,'#status',true);
-      else { $('#status')?.setAttribute('tabindex','-1'); $('#status')?.focus(); }
-      return;
-    }
-    try {
-      const replacesReceipt = session[kind]?.withdrawn ? session[kind].receipt : null;
-      const body = page === 'photo' ? prepared.blob : {answer:$('#answer').value,consent:true,enable_interaction:enableInteraction === true,termsVersion:config.termsVersion,website:$('#website').value,replacesReceipt};
-      const headers = page === 'photo' ? {'Content-Type':'image/jpeg',...(enableInteraction ? {'X-Nyx-Enable-Interaction':'true'} : {}),'X-Nyx-Consent':'true','X-Nyx-Terms':config.termsVersion,'X-Nyx-Website':$('#website').value,...(replacesReceipt ? {'X-Nyx-Replaces':replacesReceipt} : {})} : {};
-      const result = await api(page === 'photo' ? '/api/photo' : '/api/answer',body,headers);
-      session[kind] = result;
-      busy = false; showTransfer(false); receiptView(result);
-    } catch (error) {
-      uncertain = error.uncertain === true || error.code === 'STALE';
-      failure = error;
-    } finally { busy = false; showTransfer(false); controls(); }
-    if (failure) presentFailure(failure,'#status',true);
   });
-  controls();
+}
+async function history() {
+  if(busy)return;
+  openOverlay('Mis envíos','<h2>MIS ENVÍOS</h2><p id="history-status" role="status">Consultando…</p><div class="actions" id="history-list"></div><div id="history-more"></div>');
+  const load=async before=>{
+    const data=await api('/api/session',undefined,{},before?{before}:{});
+    const list=$('#history-list');if(!list)return;
+    $('#history-status').textContent=`${data.total} ${kind==='photo'?'fotografías':'respuestas'} en este navegador.`;
+    for(const entry of data.items){
+      const card=document.createElement('section');card.className='notice';
+      let date='';const parsed=new Date(entry.createdAt);if(!Number.isNaN(parsed.getTime()))date=parsed.toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+      card.innerHTML=`<p>${kind==='photo'?'Foto':'Idea'} · ${esc(date)}<br><code>${esc(entry.receipt.slice(-8))}</code></p><p class="status">${entry.withdrawn?'ANULADO':entry.pending?'POR CONFIRMAR':'RECIBIDO'}</p>${!entry.withdrawn?'<button class="danger" type="button">ANULAR ESTE ENVÍO</button>':''}`;
+      list.append(card);const button=card.querySelector('button');
+      if(button)button.onclick=()=>{
+        if(busy)return;
+        if(button.dataset.confirm!=='true'){button.dataset.confirm='true';button.textContent='CONFIRMAR ANULACIÓN';return;}
+        busy=true;button.disabled=true;$('#multi-close').disabled=true;
+        withdraw(entry).then(()=>{
+          entry.withdrawn=true;card.querySelector('.status').textContent='ANULADO';button.remove();
+          if(session.current?.receipt===entry.receipt)session.current={...entry,withdrawn:true,pending:false};
+        }).catch(error=>{card.querySelector('.status').textContent=error.message;button.disabled=false;})
+        .finally(()=>{busy=false;if($('#multi-close'))$('#multi-close').disabled=false;});
+      }
+    }
+    $('#history-more').innerHTML=data.next?'<button class="secondary" id="load-more" type="button">CARGAR MÁS</button>':'';
+    $('#load-more')?.addEventListener('click',()=>{ $('#load-more').disabled=true;load(data.next).catch(error=>{message(error.message,true,'#history-status');if($('#load-more'))$('#load-more').disabled=false;}); });
+  };
+  await load();
+}
+async function openLegal() {
+  if(busy)return;
+  const {renderLegal}=await import('./legal.js');openOverlay('Términos y privacidad','<div id="legal-copy"></div>');renderLegal($('#legal-copy'),config,esc);
+}
+function bindForm() {
+  $('#fields').disabled=false;
+  if(kind==='text'){
+    $('#question').textContent=session.question.text;$('#question-label').textContent=`TU PREGUNTA / ${String(session.question.id).padStart(3,'0')}`;
+    $('#answer').oninput=()=>{ $('#counter').textContent=`${$('#answer').value.length} / 500`;controls();};
+  } else {
+    const picker=$('#photo-file');const choose=()=>{if(!busy&&!uncertain&&!attempted&&!picker.disabled)picker.click();};
+    $('#picker').onclick=choose;$('#change-photo').onclick=choose;
+    $('#photo-frame').onclick=event=>{if(event.target===event.currentTarget&&!$('#picker').hidden)choose();};
+    picker.onchange=async()=>{
+      const file=picker.files?.[0];if(!file||busy||attempted)return;
+      const g=++generation;releasePhoto();$('#preview-box').hidden=true;$('#picker').hidden=false;$('#photo-frame').dataset.processing='true';controls();message('Preparando una versión ligera…');
+      try{const {preparePhoto}=await import('./photo.js');const result=await preparePhoto(file,config);if(g!==generation){URL.revokeObjectURL(result.previewUrl);return;}
+        prepared=result;$('#preview').src=result.previewUrl;$('#photo-info').textContent=`${Math.ceil(result.blob.size/1024)} KB · ${result.width} × ${result.height}`;$('#preview-box').hidden=false;$('#picker').hidden=true;message();}
+      catch(error){message(error.message,true);}finally{picker.value='';$('#photo-frame').dataset.processing='false';controls();}
+    };
+  }
+  $('#terms-open').onclick=()=>openLegal().catch(()=>message('No se pudo abrir el aviso. Reintenta cuando tengas señal.',true));
+  $('#consent').onchange=controls;
+  $('#contribution').onsubmit=async event=>{
+    event.preventDefault();if(busy||$('#send').disabled)return;
+    if(!uncertain&&!event.currentTarget.reportValidity())return;
+    busy=true;controls();showTransfer(true,uncertain?'COMPROBANDO…':'ENVIANDO…');
+    try{
+      if(uncertain){
+        const current=await refresh();busy=false;showTransfer(false);
+        if(current?.submitted||current?.withdrawn){uncertain=false;receiptView(current);return;}
+        uncertain=false;message(current?.pending?'La confirmación quedó pendiente. Pulsa ENVIAR para recuperar el mismo intento, sin duplicarlo.':'No consta recibido. Pulsa ENVIAR para reintentar el mismo aporte.');return;
+      }
+      attempted=true;
+      const body=kind==='photo'?prepared.blob:{answer:$('#answer').value,consent:true,enable_interaction:enabled,termsVersion:config.termsVersion,website:$('#website').value};
+      const headers={'X-Nyx-Request-Id':draftId,...(kind==='photo'?{'Content-Type':'image/jpeg','X-Nyx-Enable-Interaction':String(enabled),'X-Nyx-Consent':'true','X-Nyx-Terms':config.termsVersion,'X-Nyx-Website':$('#website').value}:{})};
+      const result=await api(kind==='photo'?'/api/photo':'/api/answer',body,headers);
+      session.current=result;busy=false;showTransfer(false);receiptView(result);
+    }catch(error){
+      uncertain=error.uncertain===true;
+      if(['INVALID_TEXT','INVALID_IMAGE','CONSENT','TOO_LARGE'].includes(error.code))attempted=false;
+      busy=false;showTransfer(false);showFailure(error,uncertain);
+    }finally{busy=false;showTransfer(false);controls();}
+  };
+  addHistoryButton();controls();
 }
 async function boot() {
-  try {
-    if (page === 'home') return;
-    if (page === 'legal') {
-      config = await api('/api/config'); updatePhase();
-      const {renderLegal} = await import('./legal.js'); renderLegal($('#legal-content'),config,esc); return;
-    }
-    const state = await api('/api/bootstrap');
-    config = state.config; session = state.session; updatePhase();
-    if (!config.ready) { showNotice('AÚN NO ABRIMOS.','La participación se está preparando.'); return; }
-    if (session?.[kind]) { receiptView(session[kind]); return; }
-    if (config.phase !== 'open' || !session) { showNotice('RECEPCIÓN CERRADA.',config.phase === 'soon' ? 'La participación todavía no comienza.' : 'Ahora no se reciben aportaciones.'); return; }
-    await bindForm();
-  } catch (error) {
-    $('#phase').textContent = 'SIN CONEXIÓN';
-    if (page === 'home') return;
-    showNotice('NO PUDIMOS CONECTAR.','Reintenta cuando tengas señal. No se envió nada desde esta pantalla.',true);
-  }
+  if(page==='home')return;
+  try{
+    if(page==='legal'){config=await api('/api/config');phase();const {renderLegal}=await import('./legal.js');renderLegal($('#legal-content'),config,esc);return;}
+    const result=await api('/api/bootstrap');config=result.config;session=result.session;phase();
+    if(!config.ready){notice('NO SE PUDO CONECTAR.','Falta la configuración de conexión con Google.');return;}
+    if(session?.current){receiptView(session.current);return;}
+    if(config.phase!=='open'||!session){notice('RECEPCIÓN CERRADA.','Este enlace no acepta nuevos envíos.');if(session)addHistoryButton();return;}
+    bindForm();
+  }catch(error){$('#phase').textContent='SIN CONEXIÓN';notice(error.code==='UPDATE_REQUIRED'?'ACTUALIZACIÓN PENDIENTE.':'NO PUDIMOS CONECTAR.',error.message);}
 }
 window.addEventListener('pagehide',releasePhoto);
-window.addEventListener('pageshow',event => { if (event.persisted && !['home','legal'].includes(page)) location.reload(); });
+window.addEventListener('pageshow',event=>{if(event.persisted&&!['home','legal'].includes(page))location.reload();});
 boot();

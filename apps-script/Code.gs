@@ -1,8 +1,8 @@
-/* NYX reenvío v5 / storage v2: carpeta plana de fotos + Google Sheet privado de dos columnas.
+/* NYX multi v6 / storage v2: carpeta plana de fotos + Google Sheet privado de dos columnas.
  * Ejecutar como propietario. No poner secretos en código ni publicar Drive/Sheet.
  * Para una instalación v1 existente: ejecutar migrateToFlatStorage(), NO setupProject().
  */
-var NYX_RECEIVER_VERSION = '2026-10-21-resend-v5';
+var NYX_RECEIVER_VERSION = '2026-10-21-multi-v6';
 var NYX_STORAGE_VERSION = '2';
 var NYX_TERMS_VERSION = '2026-10-15-v2';
 var NYX_SHEET_TITLE = 'Respuestas';
@@ -17,11 +17,7 @@ function same_(a, b) {
   for (var i = 0; i < a.length; i++) difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return difference === 0;
 }
-// Solo identifica el código publicado. No consulta ni expone datos o secretos.
-// Ver ok:true aquí NO equivale a probar una subida ni sus permisos.
-function doGet() {
-  return output_({ ok: true, service: 'NYX', version: NYX_RECEIVER_VERSION });
-}
+function doGet() { return output_({ ok: true, service: 'NYX', version: NYX_RECEIVER_VERSION, protocol: 6 }); }
 function decodeRequest_(e) {
   if (!e || !e.postData || typeof e.postData.contents !== 'string' || e.postData.contents.length > 2000000) reject_('BAD_REQUEST');
   var envelope = JSON.parse(e.postData.contents);
@@ -38,7 +34,7 @@ function decodeRequest_(e) {
   });
   if (!/^[a-f0-9]{64}$/.test(data.actor || '')) reject_('FORBIDDEN');
   if (Date.now() >= Date.parse(p.getProperty('PURGE_AT')) || p.getProperty('PURGED_AT')) reject_('CLOSED');
-  if (!['status', 'submit', 'withdraw', 'withdrawOne'].includes(data.operation)) reject_('NOT_FOUND');
+  if (!['status', 'submit', 'withdraw', 'withdrawOne', 'statusV6', 'submitV6', 'withdrawV6'].includes(data.operation)) reject_('NOT_FOUND');
   return data;
 }
 function doPost(e) {
@@ -46,25 +42,24 @@ function doPost(e) {
     var data = decodeRequest_(e);
     var p = props_();
     var key = 'NYX_ACTOR_' + data.actor;
+    if (data.operation === 'statusV6') return output_({ ok: true, data: multiStatus_(data) });
     if (data.operation === 'status') return output_({ ok: true, data: safeStatus_(JSON.parse(p.getProperty(key) || '{}'), data.includePending === true) });
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(5000)) reject_('BUSY');
     try {
       // Recheck after waiting: an administrative migration may have taken the lock.
       if (p.getProperty('MIGRATION_RUNNING') === 'true') reject_('SETUP');
-      // La limpieza pudo adquirir el bloqueo antes que este request.
       if (p.getProperty('PURGED_AT') || Date.now() >= Date.parse(p.getProperty('PURGE_AT'))) reject_('CLOSED');
+      if (data.operation === 'submitV6') return output_({ ok: true, data: multiSubmit_(data) });
+      if (data.operation === 'withdrawV6') return output_({ ok: true, data: multiWithdraw_(data) });
       var record = JSON.parse(p.getProperty(key) || '{}');
       if (data.operation === 'withdraw' || data.operation === 'withdrawOne') {
         if (data.operation === 'withdrawOne' && !['photo', 'text'].includes(data.kind)) reject_('BAD_REQUEST');
         var kinds = data.operation === 'withdrawOne' ? [data.kind] : ['photo', 'text'];
-        // A delayed withdrawal must never delete a more recent replacement.
-        // First-generation legacy clients remain compatible; replacements require a receipt.
         kinds.forEach(function (kind) {
           var item = record[kind];
-          if (!item) return;
-          if (data.operation === 'withdrawOne' && data.receipt !== undefined && data.receipt !== item.receipt) reject_('STALE');
-          if (item.replacesReceipt && (!data.receipt || data.receipt !== item.receipt)) reject_('STALE');
+          if (item && data.receipt !== undefined && data.receipt !== item.receipt) reject_('STALE');
+          if (item && item.replacesReceipt && data.receipt !== item.receipt) reject_('STALE');
         });
         kinds.forEach(function (kind) {
           if (!record[kind] || record[kind].withdrawn) return;
@@ -84,7 +79,7 @@ function doPost(e) {
       return output_({ ok: true, data: submit_(data, key, record) });
     } finally { lock.releaseLock(); }
   } catch (error) {
-    var allowed = ['BAD_REQUEST', 'FORBIDDEN', 'SETUP', 'CLOSED', 'BUSY', 'FULL', 'WITHDRAWN', 'CONSENT', 'INVALID_TEXT', 'INVALID_IMAGE', 'NOT_FOUND', 'STALE'];
+    var allowed = ['BAD_REQUEST', 'FORBIDDEN', 'SETUP', 'CLOSED', 'BUSY', 'FULL', 'WITHDRAWN', 'CONSENT', 'INVALID_TEXT', 'INVALID_IMAGE', 'NOT_FOUND', 'STALE', 'ROW_NOT_FOUND'];
     return output_({ ok: false, code: allowed.includes(error.message) ? error.message : 'BACKEND' });
   }
 }
@@ -109,23 +104,16 @@ function photoBlob_(image, receipt) {
 }
 function submit_(data, key, record) {
   var p = props_();
-  // Netlify traduce ?enable=true + el flag del envío a este booleano firmado.
-  // No se acepta un parámetro público de Google ni se consulta COLLECTION_OPEN.
-  if (data.enableInteraction !== true) reject_('CLOSED');
-  if (Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
+  if (data.enableInteraction !== true || Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
   if (data.consent !== true) reject_('CONSENT');
   if (!['photo', 'text'].includes(data.kind)) reject_('BAD_REQUEST');
   var entry = record[data.kind];
-  // Replacement is scoped to the cancelled receipt, not merely to this browser.
-  // This fences delayed POST retries and stale tabs without a new database or migration.
   var replaces = data.replacesReceipt || null;
   if (replaces && !/^NYX-[a-f0-9]{32}$/.test(replaces)) reject_('BAD_REQUEST');
   if (entry && entry.withdrawn) {
     if (replaces !== entry.receipt) reject_('STALE');
     entry = null;
-  } else if ((entry ? entry.replacesReceipt || null : null) !== replaces) {
-    reject_('STALE');
-  }
+  } else if ((entry ? entry.replacesReceipt || null : null) !== replaces) reject_('STALE');
   if (entry && entry.state === 'complete') return { receipt: entry.receipt, duplicate: true };
   if (data.kind === 'text') {
     validateText_(data.question, data.answer);
@@ -134,11 +122,7 @@ function submit_(data, key, record) {
   var digest = hex_(Utilities.computeHmacSha256Signature(JSON.stringify(data.kind === 'text' ? [data.questionId, data.question, data.answer] : [data.image]), p.getProperty('BRIDGE_SECRET'), Utilities.Charset.UTF_8));
   if (!entry) {
     var all = p.getProperties();
-    var count = Object.keys(all).filter(function (k) {
-      if (k.indexOf('NYX_ACTOR_') !== 0) return false;
-      var active = JSON.parse(all[k])[data.kind];
-      return active && active.withdrawn !== true;
-    }).length;
+    var count = Object.keys(all).filter(function (k) { if (k.indexOf('NYX_ACTOR_') !== 0) return false; var active = JSON.parse(all[k])[data.kind]; return active && !active.withdrawn; }).length;
     var max = Number(p.getProperty('MAX_PER_KIND') || '100');
     if (!Number.isInteger(max) || max < 1 || max > 500) reject_('SETUP');
     if (count >= max) reject_('FULL');
@@ -165,15 +149,24 @@ function findReceiptPhotos_(receipt) {
   return files;
 }
 function responseLocation_(receipt) {
+  if (!/^NYX-[a-f0-9]{32}$/.test(receipt || '')) reject_('BAD_REQUEST');
   var p = props_();
   if (!p.getProperty('SPREADSHEET_ID')) reject_('SETUP');
-  var result = Sheets.Spreadsheets.DeveloperMetadata.search({ dataFilters: [{ developerMetadataLookup: { metadataKey: NYX_METADATA_KEY, metadataValue: receipt, visibility: 'DOCUMENT' } }] }, p.getProperty('SPREADSHEET_ID'));
-  var matches = (result.matchedDeveloperMetadata || []).map(function (item) { return item.developerMetadata; });
+  var expected = Number(p.getProperty('RESPONSE_SHEET_ID'));
+  if (p.getProperty('RESPONSE_SHEET_ID') === null || !Number.isInteger(expected) || expected < 0) reject_('SETUP');
+  var found = Sheets.Spreadsheets.DeveloperMetadata.search({ dataFilters: [{ developerMetadataLookup: {
+    metadataKey: NYX_METADATA_KEY, metadataValue: receipt, visibility: 'DOCUMENT'
+  } }] }, p.getProperty('SPREADSHEET_ID'));
+  var matches = (found.matchedDeveloperMetadata || []).map(function (x) { return x.developerMetadata; });
   if (matches.length > 1) reject_('SETUP');
   if (!matches.length) return null;
-  var range = matches[0].location && matches[0].location.dimensionRange;
-  if (!range || range.dimension !== 'ROWS' || range.sheetId !== Number(p.getProperty('RESPONSE_SHEET_ID')) || range.startIndex < 1 || range.endIndex !== range.startIndex + 1) reject_('SETUP');
-  return range;
+  var r = matches[0].location && matches[0].location.dimensionRange;
+  if (!r || r.dimension !== 'ROWS') reject_('SETUP');
+  // Google JSON can omit a default sheetId=0. Never infer a missing nonzero ID.
+  var sheetId = r.sheetId === undefined && expected === 0 ? 0 : Number(r.sheetId);
+  var start = Number(r.startIndex), end = Number(r.endIndex);
+  if (sheetId !== expected || !Number.isInteger(start) || start < 1 || end !== start + 1) reject_('SETUP');
+  return { sheetId: sheetId, dimension: 'ROWS', startIndex: start, endIndex: end };
 }
 function writeResponse_(receipt, question, answer) {
   validateText_(question, answer);
@@ -396,127 +389,130 @@ function purgeExpired() {
       var record = JSON.parse(all[key]);
       ['photo', 'text'].forEach(function (kind) { if (record[kind] && record[kind].fileId) deleteFile_(record[kind].fileId); });
     });
+    var multiKeys = Object.keys(all).filter(function (key) { return key.indexOf('NYX_ITEM_') === 0; });
+    multiKeys.forEach(function (key) { var item = JSON.parse(all[key]); if (item.fileId) deleteFile_(item.fileId); });
     if (sheetId) deleteFile_(sheetId); // Outside the photo folder: must be removed explicitly.
     deleteFile_(rootId);
-    keys.forEach(function (key) { p.deleteProperty(key); });
+    keys.concat(multiKeys).forEach(function (key) { p.deleteProperty(key); });
     ['ROOT_FOLDER_ID', 'SPREADSHEET_ID', 'RESPONSE_SHEET_ID', 'SHEET_INITIALIZED', 'PENDING_PHOTOS_ID', 'PENDING_TEXTS_ID', 'APPROVED_PHOTOS_ID', 'APPROVED_TEXTS_ID'].forEach(function (key) { p.deleteProperty(key); });
     p.setProperty('PURGED_AT', new Date().toISOString());
     ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'purgeExpired'; }).forEach(function (t) { ScriptApp.deleteTrigger(t); });
   } finally { lock.releaseLock(); }
 }
 
-/**
- * DIAGNÓSTICO OPCIONAL: ejecutar desde el editor como propietario.
- * Solo lee propiedades, metadatos, encabezados y disparadores.
- * NO crea carpetas, NO modifica filas, NO borra archivos y NO muestra la clave.
- * No verifica que la clave de Netlify coincida ni sustituye un envío real.
- */
-function diagnosticarNYX() {
+// v6: one private property PER contribution, never one growing array per person.
+// No new Sheet/tab/columns. Existing v2-v5 receipts are kept and can be withdrawn.
+function multiReceipt_(data) {
+  if (!['photo', 'text'].includes(data.kind) || !/^[a-f0-9]{32}$/.test(data.requestId || '')) reject_('BAD_REQUEST');
+  return 'NYX-' + hex_(Utilities.computeHmacSha256Signature(
+    data.eventId + ':' + data.actor + ':' + data.kind + ':' + data.requestId,
+    props_().getProperty('BRIDGE_SECRET'), Utilities.Charset.UTF_8
+  )).slice(0, 32);
+}
+function multiPublic_(entry) {
+  return { receipt: entry.receipt, kind: entry.kind, createdAt: entry.createdAt || '',
+    requestId: entry.requestId || null, withdrawn: entry.withdrawn === true,
+    pending: entry.withdrawn !== true && entry.state !== 'complete',
+    submitted: entry.withdrawn !== true && entry.state === 'complete' };
+}
+function multiOwned_(actor, kind, receipt) {
+  var p = props_(), raw = p.getProperty('NYX_ITEM_' + receipt);
+  if (raw) {
+    var item = JSON.parse(raw);
+    if (item.actor !== actor || item.kind !== kind) reject_('NOT_FOUND');
+    return item;
+  }
+  var legacy = JSON.parse(p.getProperty('NYX_ACTOR_' + actor) || '{}')[kind];
+  if (!legacy || legacy.receipt !== receipt) return null;
+  return Object.assign({}, legacy, { receipt: receipt, actor: actor, kind: kind, legacy: true,
+    state: legacy.state || (legacy.withdrawn ? 'withdrawn' : 'complete') });
+}
+function multiStatus_(data) {
+  if (!['photo','text'].includes(data.kind)) reject_('BAD_REQUEST');
+  var p = props_(), all = p.getProperties(), byReceipt = {};
+  var legacy = JSON.parse(all['NYX_ACTOR_' + data.actor] || '{}')[data.kind];
+  if (legacy) byReceipt[legacy.receipt] = Object.assign({}, legacy, { kind: data.kind,
+    state: legacy.state || (legacy.withdrawn ? 'withdrawn' : 'complete') });
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf('NYX_ITEM_') !== 0) return;
+    var item = JSON.parse(all[key]);
+    if (item.actor === data.actor && item.kind === data.kind) byReceipt[item.receipt] = item;
+  });
+  var items = Object.keys(byReceipt).map(function (r) { return byReceipt[r]; });
+  items.sort(function (a,b) { return (b.createdAt || '').localeCompare(a.createdAt || '') || b.receipt.localeCompare(a.receipt); });
+  var offset = 0;
+  if (data.before) {
+    var idx = items.findIndex(function (x) { return x.receipt === data.before; });
+    if (idx < 0) reject_('BAD_REQUEST');
+    offset = idx + 1;
+  }
+  var current = data.requestId ? multiOwned_(data.actor, data.kind, multiReceipt_(data)) : null;
+  var page = items.slice(offset, offset + 20);
+  return { protocol: 6, version: NYX_RECEIVER_VERSION,
+    current: current ? multiPublic_(current) : null, items: page.map(multiPublic_),
+    total: items.length, active: items.filter(function (x) { return !x.withdrawn; }).length,
+    next: offset + 20 < items.length ? page[page.length - 1].receipt : null };
+}
+function multiSubmit_(data) {
   var p = props_();
-  var errores = [];
-  var avisos = [];
-  function revisar(condicion, mensaje) { if (!condicion) errores.push(mensaje); }
-  revisar((p.getProperty('BRIDGE_SECRET') || '').length >= 32,
-    'Falta BRIDGE_SECRET o tiene menos de 32 caracteres. Conserva la misma clave que Netlify.');
-  revisar(p.getProperty('STORAGE_VERSION') === NYX_STORAGE_VERSION,
-    'STORAGE_VERSION debe ser 2. No reinicialices el proyecto.');
-  revisar(p.getProperty('EVENT_ID') === 'nyx-ocampo-2026',
-    'EVENT_ID no coincide con nyx-ocampo-2026. Debe coincidir con Netlify.');
-  revisar(p.getProperty('TERMS_VERSION') === NYX_TERMS_VERSION,
-    'TERMS_VERSION debe coincidir con Netlify: ' + NYX_TERMS_VERSION + '.');
-  revisar(p.getProperty('MIGRATION_RUNNING') !== 'true',
-    'La migración está marcada en curso. No borres esta propiedad sin resolver la migración.');
-  revisar(!p.getProperty('PURGED_AT'),
-    'La colección ya está marcada como eliminada. No borres esa marca para reutilizarla.');
-  var max = Number(p.getProperty('MAX_PER_KIND') || '100');
-  revisar(Number.isInteger(max) && max >= 1 && max <= 500,
-    'MAX_PER_KIND debe ser un entero entre 1 y 500.');
-
-  var apertura = Date.parse(p.getProperty('OPENS_AT'));
-  var cierre = Date.parse(p.getProperty('CLOSES_AT'));
-  var limpieza = Date.parse(p.getProperty('PURGE_AT'));
-  var fechasValidas = [apertura, cierre, limpieza].every(function (n) { return Number.isFinite(n); }) &&
-    apertura < cierre && cierre < limpieza;
-  revisar(fechasValidas, 'OPENS_AT, CLOSES_AT y PURGE_AT deben ser fechas válidas y estar ordenadas.');
-  if (fechasValidas) {
-    revisar(Date.now() >= apertura, 'Todavía no llega OPENS_AT; la recepción no está abierta por fecha.');
-    revisar(Date.now() < cierre, 'Ya pasó CLOSES_AT; la recepción está cerrada por fecha.');
-    revisar(Date.now() < limpieza, 'Ya pasó PURGE_AT; no reutilices esta colección.');
+  if (data.enableInteraction !== true || Date.now() < Date.parse(p.getProperty('OPENS_AT')) || Date.now() >= Date.parse(p.getProperty('CLOSES_AT'))) reject_('CLOSED');
+  if (data.consent !== true) reject_('CONSENT');
+  var receipt = multiReceipt_(data), key = 'NYX_ITEM_' + receipt;
+  var item = multiOwned_(data.actor, data.kind, receipt);
+  if (item && (item.withdrawn || item.state === 'deleting')) reject_('WITHDRAWN');
+  if (data.kind === 'text') {
+    validateText_(data.question, data.answer);
+    if (!Number.isInteger(data.questionId) || data.questionId < 1 || data.questionId > 100) reject_('BAD_REQUEST');
+  } else photoBlob_(data.image, receipt);
+  var digest = hex_(Utilities.computeHmacSha256Signature(
+    JSON.stringify(data.kind === 'text' ? [data.questionId, data.question, data.answer] : [data.image]),
+    p.getProperty('BRIDGE_SECRET'), Utilities.Charset.UTF_8
+  ));
+  if (item && item.digest !== digest) reject_('BAD_REQUEST');
+  if (item && item.state === 'complete') return Object.assign(multiPublic_(item), { protocol: 6, duplicate: true });
+  if (!item) {
+    // MAX_PER_KIND from the old single-submission app is deliberately ignored.
+    // Provider quotas still apply; failure never becomes a success confirmation.
+    item = { actor: data.actor, kind: data.kind, requestId: data.requestId, receipt: receipt,
+      digest: digest, createdAt: new Date().toISOString(), termsVersion: data.termsVersion,
+      consent: true, state: 'pending' };
+    p.setProperty(key, JSON.stringify(item));
   }
-
-  var rootId = p.getProperty('ROOT_FOLDER_ID');
-  var bookId = p.getProperty('SPREADSHEET_ID');
-  var tabId = p.getProperty('RESPONSE_SHEET_ID');
-  revisar(Boolean(rootId), 'Falta ROOT_FOLDER_ID. No crees otra carpeta con el mismo nombre.');
-  revisar(Boolean(bookId), 'Falta SPREADSHEET_ID.');
-  revisar(tabId !== null && /^\d+$/.test(tabId), 'Falta RESPONSE_SHEET_ID o no es válido; 0 sí es válido.');
-  revisar(p.getProperty('SHEET_INITIALIZED') === 'true', 'SHEET_INITIALIZED no está marcado como true.');
-
-  if (rootId) {
-    try {
-      var folder = Drive.Files.get(rootId, {
-        fields: 'id,mimeType,description,trashed,capabilities(canAddChildren)'
-      });
-      revisar(folder.mimeType === 'application/vnd.google-apps.folder', 'ROOT_FOLDER_ID no identifica una carpeta.');
-      revisar(!folder.trashed, 'La carpeta de fotografías está en la papelera. Restáurala.');
-      revisar(folder.description === 'NYX_MVP:' + p.getProperty('EVENT_ID'),
-        'La carpeta no tiene el marcador NYX esperado; no se modificó.');
-      revisar(Boolean(folder.capabilities && folder.capabilities.canAddChildren),
-        'La cuenta que ejecuta el script no puede añadir archivos a la carpeta.');
-    } catch (_) {
-      errores.push('No se pudo consultar la carpeta. Verifica Drive v3, permisos y ROOT_FOLDER_ID.');
-    }
+  if (data.kind === 'photo') {
+    var found = findReceiptPhotos_(receipt);
+    if (found.length > 1) reject_('SETUP');
+    var file = found[0] || DriveApp.getFolderById(p.getProperty('ROOT_FOLDER_ID')).createFile(photoBlob_(data.image, receipt));
+    item.fileId = file.getId();
+  } else writeResponse_(receipt, data.question, data.answer);
+  item.state = 'complete';
+  p.setProperty(key, JSON.stringify(item));
+  return Object.assign(multiPublic_(item), { protocol: 6, duplicate: false });
+}
+function multiWithdraw_(data) {
+  if (!['photo','text'].includes(data.kind) || !/^NYX-[a-f0-9]{32}$/.test(data.receipt || '')) reject_('BAD_REQUEST');
+  var p = props_(), item = multiOwned_(data.actor, data.kind, data.receipt);
+  if (!item) reject_('NOT_FOUND');
+  if (item.withdrawn) return { protocol: 6, kind: data.kind, receipt: item.receipt, withdrawn: true };
+  var key = 'NYX_ITEM_' + item.receipt;
+  if (data.kind === 'text') {
+    // Find the CURRENT row by its receipt, never a saved row number or answer text.
+    var range = responseLocation_(item.receipt);
+    if (!range && item.state === 'complete') reject_('ROW_NOT_FOUND');
+    item.state = 'deleting'; p.setProperty(key, JSON.stringify(item));
+    if (range) Sheets.Spreadsheets.batchUpdate({ requests: [{ deleteDimension: { range: range } }] }, p.getProperty('SPREADSHEET_ID'));
+    if (responseLocation_(item.receipt)) reject_('BACKEND');
+  } else {
+    item.state = 'deleting'; p.setProperty(key, JSON.stringify(item));
+    if (item.fileId) deleteFile_(item.fileId);
+    else findReceiptPhotos_(item.receipt).forEach(function (f) { deleteFile_(f.getId()); });
   }
-  if (bookId) {
-    try {
-      var book = Drive.Files.get(bookId, {
-        fields: 'id,mimeType,description,trashed,parents,capabilities(canEdit)'
-      });
-      revisar(book.mimeType === 'application/vnd.google-apps.spreadsheet',
-        'SPREADSHEET_ID no identifica un Google Sheet.');
-      revisar(!book.trashed, 'La hoja de respuestas está en la papelera. Restáurala.');
-      revisar(book.description === 'NYX_SHEET:' + p.getProperty('EVENT_ID'),
-        'La hoja no tiene el marcador NYX esperado; no se modificó.');
-      revisar(!(book.parents || []).includes(rootId), 'La hoja debe estar fuera de la carpeta de fotos.');
-      revisar(Boolean(book.capabilities && book.capabilities.canEdit),
-        'La cuenta que ejecuta el script no tiene permiso para editar la hoja.');
-      var workbook = Sheets.Spreadsheets.get(bookId, {
-        fields: 'sheets(properties(sheetId,title,gridProperties(columnCount)))'
-      });
-      var tab = (workbook.sheets || []).find(function (s) {
-        return s.properties.sheetId === Number(tabId);
-      });
-      revisar(Boolean(tab), 'RESPONSE_SHEET_ID no corresponde a una pestaña existente.');
-      if (tab) {
-        revisar(tab.properties.title === NYX_SHEET_TITLE, 'La pestaña debe llamarse Respuestas.');
-        revisar(tab.properties.gridProperties.columnCount === 2, 'La pestaña debe tener exactamente dos columnas.');
-        var header = (Sheets.Spreadsheets.Values.get(bookId, "'Respuestas'!A1:B1").values || [])[0] || [];
-        revisar(header[0] === 'Pregunta' && header[1] === 'Respuesta',
-          'Los encabezados A1 y B1 deben ser Pregunta y Respuesta.');
-      }
-    } catch (_) {
-      errores.push('No se pudo consultar la hoja. Verifica Sheets v4, Drive v3, permisos y SPREADSHEET_ID.');
-    }
+  var tombstone = { receipt: item.receipt, actor: item.actor, kind: item.kind,
+    requestId: item.requestId || null, createdAt: item.createdAt || '', state: 'withdrawn', withdrawn: true };
+  p.setProperty(key, JSON.stringify(tombstone));
+  var oldKey = 'NYX_ACTOR_' + data.actor, legacy = JSON.parse(p.getProperty(oldKey) || '{}');
+  if (legacy[data.kind] && legacy[data.kind].receipt === item.receipt) {
+    legacy[data.kind] = { receipt: item.receipt, withdrawn: true };
+    p.setProperty(oldKey, JSON.stringify(legacy));
   }
-  try {
-    var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
-      return t.getHandlerFunction() === 'purgeExpired';
-    });
-    if (!triggers.length) avisos.push('No se encontró el disparador de limpieza para esta cuenta. Revisa los activadores.');
-  } catch (_) { avisos.push('No se pudieron revisar los activadores de limpieza.'); }
-
-  var informe = {
-    ESTADO: errores.length ? 'REVISAR_CONFIGURACION' : 'LISTO_EN_GOOGLE',
-    VERSION: NYX_RECEIVER_VERSION,
-    APERTURA: p.getProperty('OPENS_AT'),
-    CIERRE: p.getProperty('CLOSES_AT'),
-    LIMPIEZA: p.getProperty('PURGE_AT'),
-    ACTIVACION: 'enableInteraction=true recibido desde Netlify con firma válida',
-    COLLECTION_OPEN: 'IGNORADO: ya no controla la recepción',
-    ERRORES: errores,
-    AVISOS: avisos,
-    SIGUIENTE_PASO: 'Publica esta versión y prueba desde /foto?enable=true y /preguntas?enable=true. Esta revisión no prueba Netlify.'
-  };
-  console.log(JSON.stringify(informe, null, 2));
-  return informe;
+  return { protocol: 6, kind: data.kind, receipt: item.receipt, withdrawn: true };
 }

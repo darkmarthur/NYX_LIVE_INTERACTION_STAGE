@@ -2,106 +2,80 @@
 
 Interacción temporal para NYX Sonoro · Teatro Ocampo · 22 de octubre de 2026.
 
-**Interfaz móvil v4; almacenamiento v2 (sin nueva migración).** Fotos en una carpeta plana privada y respuestas en un Google Sheet independiente con exactamente `Pregunta` y `Respuesta`.
+**Interfaz y protocolo v6; almacenamiento v2, sin nueva migración.** Fotos en la misma carpeta plana privada y respuestas en un Google Sheet independiente con exactamente las columnas `Pregunta` y `Respuesta`.
 
-## Experiencia
+## Experiencia actual
 
-- `/`: banner estático **NYX SONORO / LIVE SET / PERFORMANCE**, sin enlaces a formularios.
-- `/foto?enable=true`: fotografía → consentimiento → enviar → anular esa foto.
-- `/preguntas?enable=true`: pregunta asignada → idea → consentimiento → enviar → anular esa respuesta.
-- Sin `?enable=true` las rutas son de solo lectura: el servidor rechaza nuevos envíos.
-- `/legal`: aviso legal completo accesible directamente. Los términos de los formularios se abren en una ventana sin salir de la ruta.
-- Instagram @nyx.sonoro aparece siempre en el footer y en el mensaje de envío recibido. Es el único enlace de difusión.
+- `/`: banner NYX SONORO / LIVE SET / PERFORMANCE, sin enlaces a formularios.
+- `/foto?enable=true`: fotografía → consentimiento → enviar → confirmación → enviar otra o anular una concreta.
+- `/preguntas?enable=true`: pregunta asignada por el servidor → idea → consentimiento → enviar → escribir otra.
+- `MIS ENVÍOS`: historial privado de la sesión y de la ruta, paginado; permite anular cualquier aportación propia sin afectar las demás.
+- Sin `?enable=true` no se aceptan nuevos envíos. Las retiradas propias continúan disponibles hasta la limpieza.
+- Los términos se abren sin salir del formulario. El logo no navega al inicio; Instagram permanece en el footer y en la confirmación.
 
-Una foto y una respuesta **activas** por navegador. Al anular una contribución puedes enviar otra del mismo tipo; el otro aporte no se altera. Sin login, nombres, galería, analítica ni IA externa. Borrar cookies, cambiar de navegador o usar incógnito permite otra identidad; no es una verificación por persona.
+Se permiten varias fotos y respuestas por navegador **sin borrar las anteriores**. Cada nuevo intento tiene un identificador propio. Los reintentos del mismo envío son idempotentes y conservan pregunta y comprobante; una nueva intención puede enviar incluso el mismo contenido.
 
-## Actualización desde tu instalación existente
+Sin login, nombres, galería de terceros, analítica ni IA externa. Borrar cookies, incógnito u otro navegador crean una sesión diferente y no permiten gestionar los aportes de la anterior. No se verifica una identidad personal.
 
-Lee [ACTIVACION_URL_V4.md](docs/ACTIVACION_URL_V4.md) y [UI_MOVIL_V3.md](docs/UI_MOVIL_V3.md) para detalles del diseño base. **No ejecutes `setupProject()` ni `migrateToFlatStorage()` si ya tienes STORAGE_VERSION=2.** Solo reemplaza `Code.gs` y publica una nueva versión de la misma implementación de Google cuando vayas a activar el cambio. No cambia el manifiesto, el secreto, las carpetas, el Sheet, los scopes, las fechas ni TERMS_VERSION.
+## Actualización de una instalación existente
 
-El commit de esta entrega utiliza `[skip netlify]`; no solicita despliegue. El sitio publicado sigue separado del código del repositorio. No publiques el frontend v4 sin actualizar **ambos** backends (Netlify y Apps Script).
+Leer [FINAL_FIX_V6.md](docs/FINAL_FIX_V6.md). **Primero actualizar Google, después publicar Netlify.** GitHub y Apps Script no se sincronizan automáticamente.
 
-## Desarrollo local
+1. Reemplazar todo `Code.gs` en el proyecto Google existente con `apps-script/Code.gs` de este repositorio. No cambiar manifiesto ni propiedades.
+2. Publicar una nueva versión de la misma implementación de Apps Script, conservando `/exec`.
+3. Abrir `/exec` y comprobar `version: 2026-10-21-multi-v6`, `protocol: 6`.
+4. Construir y publicar el nuevo código de Netlify desde `main`, con la configuración existente.
+
+**No ejecutar `setupProject`, `migrateToFlatStorage` ni `purgeExpired`** sobre la instalación ya configurada. No crear otra carpeta o Sheet. No cambiar claves, IDs, fechas ni TERMS_VERSION. Este commit lleva `[skip netlify]`; no solicita publicación automática.
+
+## Desarrollo y pruebas
 
 Node.js 22 o posterior, sin dependencias NPM de ejecución:
 
 ```sh
 npm run dev
-# http://localhost:8888
-npm test
+# /foto?enable=true o /preguntas?enable=true en http://localhost:8888
+node --test test/v6.test.mjs
 npm run build
 ```
 
-`npm run dev` construye `dist/` y sirve una **DEMO LOCAL** que solo guarda referencias simuladas en memoria. No sube archivos ni respuestas a Google. Reiniciarla elimina ese estado. Sus ventanas se abren artificialmente y su aviso es de ejemplo; no uses datos personales reales.
+La demo local conserva referencias simuladas en memoria, no escribe en Google y usa fechas/aviso de prueba. Para ensayo con Google real: configurar un `.env` privado, construir y ejecutar `node --env-file=.env scripts/dev.mjs --live`, con SITE_ORIGIN local correspondiente.
 
-Para un ensayo local con Google real: completa un `.env` privado a partir de `.env.example`, ejecuta `npm run build` y luego `node --env-file=.env scripts/dev.mjs --live`. SITE_ORIGIN debe coincidir con `http://localhost:8888` para ese ensayo. No cambies la configuración de producción por error.
+Las pruebas históricas describen protocolos y diseños anteriores. El alcance de esta integración está en [TEST_REPORT_V6.md](docs/TEST_REPORT_V6.md). Los servicios simulados no sustituyen el ensayo en la URL real y teléfonos físicos.
 
-## Arquitectura
+## Arquitectura y seguridad
 
-La página estática sirve HTML significativo antes de ejecutar el módulo JS. Netlify Function `/api/*` valida sesión, origen, CSRF, consentimiento y límites; firma los requests hacia Apps Script. Apps Script, ejecutado por el propietario, escribe en Drive/Sheets privados. No se usa Netlify Forms, S3, Supabase ni Heroku.
+Frontend estático → Netlify Function `/api/*` → peticiones firmadas HMAC → Apps Script del propietario → Drive/Sheets privados. No usa Forms, S3, Supabase o Heroku.
 
-`/api/bootstrap` reúne configuración + sesión en una petición. Para una identidad nueva no consulta Google todavía; para un navegador que vuelve, consulta el estado real de sus aportes. El banco de preguntas no se descarga al teléfono.
+`server/multi.mjs` conserva el núcleo de validación `server/app.mjs`; `netlify/functions/api.mjs` conserva `withErrorDiagnostics`. Google implementa `statusV6`, `submitV6` y `withdrawV6`. El bootstrap comprueba la versión real del receptor antes de habilitar formularios, incluso para usuarios nuevos.
 
-La foto se reduce en el teléfono: máximo 2048 px, objetivo 256 KiB, límite de salida 384 KiB; puede reducir resolución/calidad para cumplirlo. Se sube como JPEG binario, no como JSON/base64 desde el teléfono. El transporte firmado hacia Google conserva la compatibilidad del receptor. HEIC solo si el navegador puede decodificarlo.
+El teléfono manda JPEG binario comprimido: objetivo 256 KiB, límite de salida 384 KiB, hasta 2048 px con reducción adicional si hace falta. La compresión se carga solo al seleccionar foto. Los fondos existentes son opcionales y diferidos. No se reenvía una foto automáticamente tras perder la confirmación: se consulta el mismo intento primero. Se requiere conexión al menos intermitente.
 
-La compresión se carga al elegir una foto y usa un worker con OffscreenCanvas cuando es compatible; existe fallback Canvas asíncrono, con tareas de dibujo en el hilo principal. No se afirma bloqueo cero en todos los móviles. No hay WebGL, videos, fuentes remotas, animaciones continuas, polling ni service worker. Un corte de señal no dispara automáticamente otra subida: permite comprobar si el primer envío llegó.
+La cookie firmada es HttpOnly, SameSite=Strict y Secure en HTTPS. Solo el servidor deriva la identidad; no confía en nombres o IDs de archivo del cliente. Por intento se conserva en sessionStorage un identificador aleatorio, nunca fotos ni textos. Google guarda una propiedad privada por aporte, no una única lista creciente por participante.
 
-`npm run build` genera HTML por ruta y activos en `dist/assets/<hash>/`. Esos activos tienen caché larga; las respuestas API son privadas/no-store. `dist/build-report.json` informa tamaños sin cabeceras/TLS/API. Lee el alcance real de las pruebas en [TEST_REPORT_V3.md](docs/TEST_REPORT_V3.md).
+La retirada de fotos utiliza fileId y soporta renombrarlas. Para textos, resuelve el comprobante ligado a la fila actual. Si falta ese vínculo en un aporte completo, no anuncia éxito ni elimina una fila arbitraria. El Sheet visible sigue teniendo dos columnas.
 
-## Identidad y anulación
+## Configuración
 
-La cookie `nyx_participant` es aleatoria, firmada, HttpOnly, SameSite=Strict y Secure en HTTPS. El servidor deriva el actor; ignora IDs, nombres de archivo o supuestas identidades enviados por el cliente.
+Build `npm run build`; publish `dist`; functions `netlify/functions`.
 
-El backend conserva un pequeño registro privado en Script Properties: actor → comprobante y fileId de Drive / comprobante de la fila. El nombre de cada JPEG lo asigna Google como `NYX-<UUID>.jpg`. El identificador real de Drive permite anular aunque se renombre el archivo. Para respuestas se usan metadatos ligados a la fila, no una columna ni una pestaña extra.
-
-La nueva operación interna `withdrawOne` solo afecta `photo` o `text`. Un Google backend v2 sin actualizar rechaza esa operación: **nunca se intenta la retirada antigua de ambos tipos como fallback**. La operación antigua se conserva únicamente para clientes antiguos que pidan expresamente retirada global.
-
-El borrado de la fila activa no implica eliminación instantánea de su historial en Google. Las retiradas no eliminan por sí solas copias locales del show o capturas; el equipo debe excluirlas y verificar sincronización.
-
-## Nueva instalación de Google
-
-Crea un proyecto independiente en Apps Script, pega `apps-script/Code.gs` y `apps-script/appsscript.json`, agrega una clave aleatoria privada `BRIDGE_SECRET` de al menos 32 caracteres a Propiedades del script, ejecuta `setupProject()` y autoriza. Se crean la carpeta plana privada y el Sheet fuera de ella. `showSetup()` muestra enlaces sin mostrar la clave.
-
-Publica como aplicación web, ejecutar como yo, acceso cualquier persona, y conserva la URL `/exec`. Los visitantes no autorizan Google; el receptor exige firma del backend. Políticas Workspace pueden restringir aplicaciones anónimas.
-
-Para instalaciones v1 usa primero [ACTUALIZAR_A_V2.md](docs/ACTUALIZAR_A_V2.md); para v2 ya migrada no la repitas.
-
-## Configuración de Netlify
-
-Build: `npm run build`. Publish: **`dist`**. Functions: `netlify/functions`.
-
-Variables privadas con alcance Functions (o all):
-
-| Variable | Valor |
+| Variable | Uso |
 |---|---|
-| APPS_SCRIPT_URL | URL `/exec` del proyecto Google |
-| BRIDGE_SECRET | El mismo secreto de Google, nunca en el repositorio |
-| SITE_ORIGIN | `https://nyxsonoro.netlify.app`, sin slash final |
-| TERMS_VERSION | `2026-10-15-v2` (no cambia con la UI) |
-| PRIVACY_CONTROLLER | Responsable real; se publica en el aviso |
-| PRIVACY_ADDRESS | Domicilio real del aviso; se publica |
-| PRIVACY_EMAIL | Correo atendido de privacidad; se publica |
-| LEGAL_APPROVED | Referencia administrativa opcional; **no es un interruptor** de interacción en v4 |
-| COLLECTION_OPEN | **Obsoleta en v4: se ignora tanto en Netlify como en Apps Script.** No es necesario modificarla para abrir o cerrar las rutas. |
+| APPS_SCRIPT_URL | URL /exec de la misma implementación Google |
+| BRIDGE_SECRET | Secreto privado idéntico en Netlify y Google |
+| SITE_ORIGIN | https://nyxsonoro.netlify.app sin slash final |
+| TERMS_VERSION | 2026-10-15-v2, sin cambio de versión por este fix |
+| PRIVACY_CONTROLLER, PRIVACY_ADDRESS, PRIVACY_EMAIL | Datos públicos y reales del responsable en el aviso |
+| COLLECTION_OPEN, LEGAL_APPROVED | No son interruptores de recepción; se ignoran para la activación |
 
-Se pueden sobreescribir EVENT_ID, OPENS_AT, CLOSES_AT, PURGE_AT en ambos servicios, siempre con valores iguales. Predeterminados: apertura 8/oct/2026; cierre 22/oct/2026 19:00; limpieza desde 23/oct/2026 10:00, Ciudad de México. Sin conexión técnica real (SITE_ORIGIN, APPS_SCRIPT_URL, BRIDGE_SECRET), el sitio no confirma envíos falsos. `LEGAL_APPROVED` y la validación del formato de `PRIVACY_EMAIL` **no bloquean** el formulario. La URL `?enable=true` controla exclusivamente la habilitación, con los límites técnicos, consentimiento y fechas vigentes. **Revisa y completa el aviso de privacidad antes de recibir aportaciones reales**, aunque el sistema no lo impida.
+La URL `?enable=true` más el campo/encabezado explícito de la petición habilitan cada nuevo envío dentro de las fechas configuradas. Netlify valida cookie, origen, CSRF, consentimiento y tamaños antes de firmar `enableInteraction: true` para Google. El parámetro es público: no es contraseña ni cierre global; compartirlo permite participar.
 
-Netlify Free conserva sus cuotas y disponibilidad de proveedor. No se contrataron servicios ni se promete gratuidad ilimitada.
+No hay un límite programado de cantidad por participante en v6 y el cupo antiguo MAX_PER_KIND no afecta sus operaciones. **Google y Netlify conservan cuotas, capacidad y límites de disponibilidad.** No se promete infraestructura ilimitada. Completar el aviso y el contacto de privacidad sigue siendo responsabilidad de producción.
 
-## Show y limpieza
+## Evento y limpieza
 
-Sincroniza la carpeta plana y márcala disponible sin conexión. TouchDesigner puede leerla directamente; verifica que las fotos hayan terminado de sincronizar. El Sheet se abre por separado. No hay aprobación ni organización obligatoria de carpetas. La falta de moderación previa permite que lleguen aportes inadecuados: conserva la capacidad de excluir contenido.
+Las fechas existentes se mantienen: cierre predeterminado el 22 de octubre de 2026 a las 19:00 y limpieza desde el 23 de octubre de 2026 a las 10:00, hora de Ciudad de México. OPENS_AT, CLOSES_AT y PURGE_AT deben coincidir en ambos servicios.
 
-Los scripts de exportación y limpieza local de v2 siguen disponibles. El programa no genera el poema ni los visuales.
+`purgeExpired()` contempla la carpeta, el Sheet independiente y los registros v6. Debe verificarse su ejecución. No usar esos destinos para otros documentos. Una retirada en línea no elimina por sí sola lo que TouchDesigner ya cargó, las exportaciones o los historiales internos de proveedores. El equipo debe excluir y eliminar las copias locales bajo su control.
 
-El disparador `purgeExpired()` intenta borrar definitivamente la carpeta dedicada y el Sheet externo desde PURGE_AT, y elimina registros de Script Properties. Debe verificarse su ejecución. No uses esos destinos para otros documentos. Las copias locales, exportaciones, cachés y respaldos bajo tu control también deben eliminarse; ni el script ni la web garantizan borrado inmediato de respaldos internos de proveedores.
-
-## Apertura mediante URL (v4)
-
-El propio enlace define si una ruta recibe nuevas participaciones: `https://nyxsonoro.netlify.app/foto?enable=true` y `https://nyxsonoro.netlify.app/preguntas?enable=true`. El parámetro debe tener exactamente el valor minúsculo `true` una sola vez. `?enable=TRUE`, `?enable=1` o parámetros ausentes no habilitan. No hace falta cambiar `COLLECTION_OPEN`.
-
-El navegador incluye `?enable=true` en la petición hacia `/api/answer` o `/api/photo` y además transmite `enable_interaction: true` en JSON para texto o `X-Nyx-Enable-Interaction: true` para JPEG binario. Netlify valida ambos antes de enviar y transmite el booleano firmado `enableInteraction: true` a Apps Script, que lo comprueba antes de escribir. Otras rutas solo permiten consultar y anular aportaciones propias aunque no tengan la bandera, para no bloquear la retirada de consentimiento.
-
-**Esto no es una contraseña ni un sistema de cierre global.** Cualquiera con el enlace habilitado puede participar. Como el parámetro se puede copiar o volver a añadir, **quitarlo del QR no cancela enlaces ya compartidos ni cierra el endpoint públicamente**: para un cierre global inmediato habría que añadir un control administrativo aparte. Se mantienen las fechas `CLOSES_AT`, `PURGE_AT`, límites, cookies, validación y el consentimiento, y la desactivación manual ya no se usa. Mantén la protección antiabuso propia del evento.
-
-Los enlaces a términos funcionan dentro de un diálogo modal; el logo no navega al home. El enlace externo a Instagram es la excepción intencional a la navegación fija. Enviar nuevas fotos o respuestas requiere conexión, aunque el frontend siga siendo ligero.
+Los scripts de exportación y limpieza local anteriores siguen en el repositorio. La aplicación recolecta y prepara material; no genera por sí misma el poema ni los visuales.
